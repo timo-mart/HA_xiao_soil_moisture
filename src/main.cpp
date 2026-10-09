@@ -157,9 +157,9 @@ void setup() {
   zbMoisture.setAnalogInputDescription("Soil Moisture");
   zbMoisture.setAnalogInputResolution(1);
 
-  // Set power source to battery, battery percentage and battery voltage
-  if(measureBatteryVoltage() > 1) zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY, measureBatteryPercentage(), measureBatteryVoltage());
-  else zbMoisture.setPowerSource(ZB_POWER_SOURCE_MAINS);
+  // Keep the Zigbee identity stable regardless of the current power source.
+  // Battery measurements are populated later when running on battery.
+  zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY);
 
   // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
