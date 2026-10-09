@@ -53,7 +53,30 @@ public:
       return false;
     }
     ezb_zcl_free_attr_desc(duplicate);
-    return setPowerSource(ZB_POWER_SOURCE_BATTERY);
+    if (!setPowerSource(ZB_POWER_SOURCE_BATTERY)) {
+      return false;
+    }
+
+    // Keep the battery entity unknown until the first real percentage report.
+    _battery_percentage = 0xff;
+    if (!setEpClusterAttrValue(
+          EZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+          EZB_ZCL_CLUSTER_SERVER,
+          EZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+          &_battery_percentage)) {
+      return false;
+    }
+
+    // BatteryVoltage is optional and not reportable through this Arduino API.
+    // Omitting it is preferable to leaving ZHA with a stale or bogus value.
+    ezb_zcl_cluster_desc_t power = getEpClusterDesc(EZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+    ezb_zcl_attr_desc_t voltage = ezb_zcl_cluster_remove_attr_desc(
+      power, EZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, 0);
+    if (voltage == EZB_INVALID_ZCL_ATTR_DESC) {
+      return false;
+    }
+    ezb_zcl_free_attr_desc(voltage);
+    return true;
   }
 };
 
@@ -90,7 +113,6 @@ static void measureAndSleep(void *arg) {
 
   zbMoisture.setAnalogInput(moisture);
 
-  zbMoisture.setBatteryVoltage(measureBatteryVoltage());
   zbMoisture.setBatteryPercentage(measureBatteryPercentage());
   zbMoisture.reportBatteryPercentage();
 
