@@ -199,6 +199,7 @@ void setup() {
   if (!Zigbee.role(&zigbeeConfig, false)) {
     ESP.restart();
   }
+  Zigbee.setRxOnWhenIdle(false);
 
   // Optional: set Zigbee device name and model + add cluster for moisture sensor
   zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
