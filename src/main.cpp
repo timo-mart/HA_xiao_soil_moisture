@@ -20,7 +20,7 @@
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP_SHORT  900         /* Sleep for 15min */
-#define TIME_TO_SLEEP_LONG  21500     /* Sleep for 6h (after 6h ZHA set device as unavailable) */
+#define TIME_TO_SLEEP_LONG  900       /* Test cadence: also wake every 15min when soil is moist */
 #define TIME_TO_SLEEP_TRESHOLD 45 /* moisture percentage below witch is period of reporting more frequent */
 #define REPORT_TIMEOUT 1000       /* Timeout for response from coordinator in ms */
 
