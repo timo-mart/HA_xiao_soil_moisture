@@ -23,8 +23,7 @@
 #define TIME_TO_SLEEP_LONG  900       /* Test cadence: also wake every 15min when soil is moist */
 #define TIME_TO_SLEEP_TRESHOLD 45 /* moisture percentage below witch is period of reporting more frequent */
 #define REPORT_TIMEOUT 1000       /* Timeout for response from coordinator in ms */
-#define COMMISSIONING_TIMEOUT 60000 /* Maximum cold-boot wait for ZHA to bind the moisture cluster */
-#define COMMISSIONING_SETTLE_TIME 5000 /* Allow configure-reporting requests to finish after binding */
+#define COMMISSIONING_TIMEOUT 60000 /* Keep a cold-booted device reachable while ZHA interviews it */
 
 #define WET_VOLTAGE 1600 // voltage at full water saturation
 #define DRY_VOLTAGE 2550 // voltage at dry soil
@@ -140,16 +139,15 @@ static void measureAndSleep(void *arg) {
 #endif
 
   uint32_t reportDeadline = millis() + (commissioningBoot ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
-  while (!sent && (int32_t)(reportDeadline - millis()) > 0) {
+  while ((commissioningBoot || !sent) && (int32_t)(reportDeadline - millis()) > 0) {
     vTaskDelay(500 / portTICK_PERIOD_MS);
-    sent = zbMoisture.reportAnalogInput();
+    if (!sent) {
+      sent = zbMoisture.reportAnalogInput();
+    }
   }
 
-  if (commissioningBoot && sent) {
-    // ZHA binds Power Configuration before Analog Input. Once the moisture
-    // report succeeds, keep polling briefly so configure-reporting can finish,
-    // then publish both values again before the first deep sleep.
-    vTaskDelay(COMMISSIONING_SETTLE_TIME / portTICK_PERIOD_MS);
+  if (commissioningBoot) {
+    // Publish the final values after ZHA has had the full interview window.
     zbMoisture.reportBatteryPercentage();
     zbMoisture.reportAnalogInput();
   }
