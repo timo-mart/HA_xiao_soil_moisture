@@ -98,22 +98,34 @@ uint8_t measureBatteryPercentage(){
   }
   return percentage;
 }
+
+uint8_t measureMoisturePercentage(int wetVoltage = WET_VOLTAGE) {
+  uint32_t adcTotal = 0;
+  for (uint8_t sample = 0; sample < 5; sample++) {
+    adcTotal += analogRead(sensorPin);
+  }
+
+  int32_t adc = adcTotal / 5;
+  int32_t span = DRY_VOLTAGE - wetVoltage;
+  if (span <= 0) {
+    return 0;
+  }
+  int32_t moisture = (DRY_VOLTAGE - adc) * 100 / span;
+  return constrain(moisture, 0, 100);
+}
+
 /************************ function called when on battery *****************************/
 static void measureAndSleep(void *arg) {
-  // Measure temperature sensor value
-  uint moisture = 0;
   bool sent;
 
-  // measure moisture 5 times and calculate average to get more stable value
-  for(uint8_t m = 0; m<5; m++){
-    moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - (WET_VOLTAGE - BATTERY_FACTOR*(100-measureBatteryPercentage()) ) ) );  //s nízkou baterkou napětí ve vodě klesne až na 1350
-  }
-  moisture = moisture /5;
+  uint8_t batteryPercentage = measureBatteryPercentage();
+  int wetVoltage = WET_VOLTAGE - BATTERY_FACTOR * (100 - batteryPercentage);
+  uint8_t moisture = measureMoisturePercentage(wetVoltage);
   analogWrite(pwmPin, 0);
 
   zbMoisture.setAnalogInput(moisture);
 
-  zbMoisture.setBatteryPercentage(measureBatteryPercentage());
+  zbMoisture.setBatteryPercentage(batteryPercentage);
   zbMoisture.reportBatteryPercentage();
 
   sent = zbMoisture.reportAnalogInput();  // report moisture as percentage value
@@ -146,12 +158,7 @@ static void measureAndSleep(void *arg) {
 /************************ function called when plugged in *****************************/
 static void measure(void *arg) {
   while(true){
-    uint moisture = 0;
-
-    for(uint8_t m = 0; m<5; m++){
-      moisture = moisture + ( ( DRY_VOLTAGE - analogRead(sensorPin) )*100 / ( DRY_VOLTAGE - WET_VOLTAGE ) );
-    }
-    moisture = moisture /5;
+    uint8_t moisture = measureMoisturePercentage();
 
     zbMoisture.setAnalogInput(moisture);
     
