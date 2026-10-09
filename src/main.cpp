@@ -36,7 +36,28 @@ const uint8_t ledRedPin = 20;
 const uint8_t ledGreenPin = 19;
 const uint8_t ledYellowPin = 18;
 
-ZigbeeAnalog zbMoisture = ZigbeeAnalog(ENDPOINT_NUMBER);
+// Arduino-ESP32 4.0.0-RC1's setPowerSource() tries to add the Basic cluster's
+// PowerSource attribute even though the SDK 2.x default Basic cluster already
+// contains it. The duplicate add fails before the Power Configuration cluster
+// is created. Keep this workaround local and remove it when the core fixes the
+// implementation.
+class BatteryZigbeeAnalog : public ZigbeeAnalog {
+public:
+  using ZigbeeAnalog::ZigbeeAnalog;
+
+  bool setBatteryPowerSource() {
+    ezb_zcl_cluster_desc_t basic = getEpClusterDesc(EZB_ZCL_CLUSTER_ID_BASIC);
+    ezb_zcl_attr_desc_t duplicate = ezb_zcl_cluster_remove_attr_desc(
+      basic, EZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID, 0);
+    if (duplicate == EZB_INVALID_ZCL_ATTR_DESC) {
+      return false;
+    }
+    ezb_zcl_free_attr_desc(duplicate);
+    return setPowerSource(ZB_POWER_SOURCE_BATTERY);
+  }
+};
+
+BatteryZigbeeAnalog zbMoisture = BatteryZigbeeAnalog(ENDPOINT_NUMBER);
 
 uint8_t measureBatteryVoltage(){
   uint8_t voltage = analogRead(batteryPin)/100;
@@ -159,7 +180,9 @@ void setup() {
 
   // Keep the Zigbee identity stable regardless of the current power source.
   // Battery measurements are populated later when running on battery.
-  zbMoisture.setPowerSource(ZB_POWER_SOURCE_BATTERY);
+  if (!zbMoisture.setBatteryPowerSource()) {
+    ESP.restart();
+  }
 
   // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
