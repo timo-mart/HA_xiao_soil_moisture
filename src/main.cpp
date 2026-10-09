@@ -192,13 +192,13 @@ void setup() {
   pinMode(buttonPin, INPUT);
 
   // Arduino-ESP32 4 selects and initializes the Zigbee role before endpoint
-  // configuration. Keep the same 10-second end-device keep-alive as the
-  // original firmware and Espressif's sleepy-sensor example.
+  // configuration. Use its default 3-second end-device keep-alive so a sleepy
+  // device polls its parent promptly during commissioning.
   esp_zigbee_device_config_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
-  zigbeeConfig.zed_config.keep_alive = 10000;
   if (!Zigbee.role(&zigbeeConfig, false)) {
     ESP.restart();
   }
+  Zigbee.setRxOnWhenIdle(false);
 
   // Optional: set Zigbee device name and model + add cluster for moisture sensor
   zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
