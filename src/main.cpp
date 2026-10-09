@@ -141,10 +141,19 @@ void setup() {
   // Init button switch
   pinMode(buttonPin, INPUT);
 
+  // Arduino-ESP32 4 selects and initializes the Zigbee role before endpoint
+  // configuration. Keep the same 10-second end-device keep-alive as the
+  // original firmware and Espressif's sleepy-sensor example.
+  esp_zigbee_device_config_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
+  zigbeeConfig.zed_config.keep_alive = 10000;
+  if (!Zigbee.role(&zigbeeConfig, false)) {
+    ESP.restart();
+  }
+
   // Optional: set Zigbee device name and model + add cluster for moisture sensor
   zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
   zbMoisture.addAnalogInput();
-  zbMoisture.setAnalogInputApplication(ESP_ZB_ZCL_AI_PERCENTAGE_OTHER);
+  zbMoisture.setAnalogInputApplication(EZB_ZCL_AI_PERCENTAGE_OTHER);
   zbMoisture.setAnalogInputDescription("Soil Moisture");
   zbMoisture.setAnalogInputResolution(1);
 
@@ -155,16 +164,12 @@ void setup() {
   // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
 
-  // Create a custom Zigbee configuration for End Device with keep alive 10s to avoid interference with reporting data
-  esp_zb_cfg_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
-  zigbeeConfig.nwk_cfg.zed_cfg.keep_alive = 10000;
-
   // For battery powered devices, it can be better to set timeout for Zigbee Begin to lower value to save battery
   // If the timeout has been reached, the network channel mask will be reset and the device will try to connect again after reset (scanning all channels)
   Zigbee.setTimeout(10000);  // Set timeout for Zigbee Begin to 10s (default is 30s)
 
   // When all EPs are registered, start Zigbee in End Device mode
-  if (!Zigbee.begin(&zigbeeConfig, false)) {
+  if (!Zigbee.begin()) {
     digitalWrite(ledRedPin, 1);
     delay(500);
     digitalWrite(ledRedPin, 0);
