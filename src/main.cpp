@@ -118,15 +118,10 @@ uint8_t measureMoisturePercentage(int wetVoltage = WET_VOLTAGE) {
 static void measureAndSleep(void *arg) {
   bool sent = false;
   esp_reset_reason_t resetReason = esp_reset_reason();
-  uint32_t wakeupCauses = esp_sleep_get_wakeup_causes();
   bool commissioningBoot = resetReason != ESP_RST_DEEPSLEEP;
 
   uint8_t batteryPercentage = measureBatteryPercentage();
-  Serial.printf(
-    "battery task: reset_reason=%d wakeup_causes=0x%08lx commissioning=%d battery=%u%%\n",
-    (int)resetReason, (unsigned long)wakeupCauses, commissioningBoot, batteryPercentage);
   if (batteryPercentage == 0 && !commissioningBoot) {
-    Serial.println("battery task: empty battery on deep-sleep wake, disabling timer and sleeping");
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     esp_deep_sleep_start();
   }
@@ -138,9 +133,8 @@ static void measureAndSleep(void *arg) {
 
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningBoot) {
-    bool batterySent = zbMoisture.reportBatteryPercentage();
+    zbMoisture.reportBatteryPercentage();
     sent = zbMoisture.reportAnalogInput();  // report moisture as percentage value
-    Serial.printf("normal report: battery=%d moisture=%d\n", batterySent, sent);
   }
 
 #if USE_LED_ON_BATTERY
@@ -151,15 +145,13 @@ static void measureAndSleep(void *arg) {
 
   uint32_t reportDeadline = millis() + (commissioningBoot ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
   if (commissioningBoot) {
-    Serial.printf("commissioning: quiet interview window for %u ms\n", COMMISSIONING_INTERVIEW_GRACE);
     vTaskDelay(COMMISSIONING_INTERVIEW_GRACE / portTICK_PERIOD_MS);
 
     while ((int32_t)(reportDeadline - millis()) > 0) {
       // Regular reports keep a sleepy device exchanging traffic with its
       // parent while ZHA binds clusters and configures attribute reporting.
-      bool batterySent = zbMoisture.reportBatteryPercentage();
-      bool moistureSent = zbMoisture.reportAnalogInput();
-      Serial.printf("commissioning report: battery=%d moisture=%d\n", batterySent, moistureSent);
+      zbMoisture.reportBatteryPercentage();
+      zbMoisture.reportAnalogInput();
 
       int32_t remaining = reportDeadline - millis();
       if (remaining <= 0) {
@@ -177,9 +169,8 @@ static void measureAndSleep(void *arg) {
 
   if (commissioningBoot) {
     // Publish the final values after ZHA has had the full interview window.
-    bool batterySent = zbMoisture.reportBatteryPercentage();
-    bool moistureSent = zbMoisture.reportAnalogInput();
-    Serial.printf("commissioning final report: battery=%d moisture=%d\n", batterySent, moistureSent);
+    zbMoisture.reportBatteryPercentage();
+    zbMoisture.reportAnalogInput();
   }
   vTaskDelay(500 / portTICK_PERIOD_MS); // wait for a while to let the data be sent before going to sleep, otherwise the device may go to sleep before sending the data and the data will be lost
 
@@ -192,7 +183,6 @@ static void measureAndSleep(void *arg) {
   // Put device to deep sleep based on moisture level, if the moisture is below the threshold, the device will sleep for shorter time to report more frequently, otherwise it will sleep for longer time to save battery
   if(moisture < TIME_TO_SLEEP_TRESHOLD) esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_SHORT * uS_TO_S_FACTOR);
   else esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_LONG * uS_TO_S_FACTOR);
-  Serial.printf("battery task: entering deep sleep, moisture=%u%%\n", moisture);
   esp_deep_sleep_start();
 }
 
@@ -220,11 +210,6 @@ static void measure(void *arg) {
 
 /********************* Arduino functions **************************/
 void setup() {
-  Serial.begin(115200);
-  Serial.printf(
-    "boot: reset_reason=%d wakeup_causes=0x%08lx\n",
-    (int)esp_reset_reason(), (unsigned long)esp_sleep_get_wakeup_causes());
-  
   pinMode(ledRedPin, OUTPUT);
   pinMode(ledGreenPin, OUTPUT);
   pinMode(ledYellowPin, OUTPUT);
