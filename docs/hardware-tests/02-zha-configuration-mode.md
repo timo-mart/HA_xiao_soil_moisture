@@ -77,3 +77,18 @@ interval is selected. The dry interval may not exceed the moist interval.
 5. Open ZHA discovery and commission it again.
 6. Confirm all eight entities return and the calibration and sleep-policy
    values survived the Zigbee-only reset.
+
+## Result: 2026-10-10
+
+- Battery-only commissioning completed and all eight ZHA entities appeared.
+- Valid dry/moist reporting intervals and the dry threshold were accepted and
+  echoed back during configuration mode.
+- A moist interval below the current dry interval was rejected and restored to
+  the previously saved value.
+- Below-threshold readings selected the dry interval; readings at or above the
+  threshold selected the moist interval.
+- Sleep-policy settings survived complete power cycles.
+- Existing moisture, raw-voltage, battery, calibration, configuration-mode,
+  and commissioning behavior remained functional.
+
+The ZHA configuration mode and persistent sleep policy pass hardware testing.
