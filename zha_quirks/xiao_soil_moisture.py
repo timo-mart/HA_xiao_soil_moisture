@@ -11,7 +11,31 @@ from zhaquirks.builder import (
 from zhaquirks.clusters import CustomCluster
 
 
-class RawSoilVoltageAnalogInput(CustomCluster, AnalogInput):
+class EngineeringUnitsAnalogInput(CustomCluster, AnalogInput):
+    """Use engineering units without ZHA overriding quirk device classes."""
+
+    def get(self, key, default=None):
+        """Let ZHA derive units without remapping the explicit device class."""
+
+        if key in (
+            AnalogInput.AttributeDefs.application_type.id,
+            AnalogInput.AttributeDefs.application_type.name,
+        ):
+            return None
+        return super().get(key, default)
+
+
+class SoilMoistureAnalogInput(EngineeringUnitsAnalogInput):
+    """Expose endpoint 1 as a soil-moisture percentage sensor."""
+
+    _CONSTANT_ATTRIBUTES = {
+        AnalogInput.AttributeDefs.description.id: "Soil Moisture",
+        AnalogInput.AttributeDefs.engineering_units.id: 98,
+        AnalogInput.AttributeDefs.resolution.id: 1.0,
+    }
+
+
+class RawSoilVoltageAnalogInput(EngineeringUnitsAnalogInput):
     """Expose endpoint 2 as a read-only millivolt sensor."""
 
     _CONSTANT_ATTRIBUTES = {
@@ -21,16 +45,6 @@ class RawSoilVoltageAnalogInput(CustomCluster, AnalogInput):
         AnalogInput.AttributeDefs.max_present_value.id: 3300.0,
         AnalogInput.AttributeDefs.resolution.id: 1.0,
     }
-
-    def get(self, key, default=None):
-        """Let ZHA derive the unit from engineering_units instead of count."""
-
-        if key in (
-            AnalogInput.AttributeDefs.application_type.id,
-            AnalogInput.AttributeDefs.application_type.name,
-        ):
-            return None
-        return super().get(key, default)
 
 
 class WetCalibrationAnalogOutput(CustomCluster, AnalogOutput):
@@ -100,6 +114,7 @@ class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
 
 (
     QuirkBuilder("Seed Studio", "Xiao Soil Moisture Sensor")
+    .replaces(SoilMoistureAnalogInput, endpoint_id=1)
     .replaces(RawSoilVoltageAnalogInput, endpoint_id=2)
     .replaces(WetCalibrationAnalogOutput, endpoint_id=3)
     .replaces(DryCalibrationAnalogOutput, endpoint_id=4)
