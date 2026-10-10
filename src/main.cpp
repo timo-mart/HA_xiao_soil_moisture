@@ -4,6 +4,7 @@
 // The device can be woken up by a button press, which can be used for factory reset if the button is pressed for more than 10 seconds.
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include "esp_system.h"
 
 #ifndef ZIGBEE_MODE_ED
@@ -28,9 +29,15 @@
 #define COMMISSIONING_INTERVIEW_GRACE 10000 /* Let ZHA read descriptors and Basic attributes first */
 #define COMMISSIONING_REPORT_INTERVAL 5000 /* Keep Zigbee traffic flowing while ZHA configures the device */
 
-#define WET_VOLTAGE 1600 // voltage at full water saturation
-#define DRY_VOLTAGE 2550 // voltage at dry soil
-#define BATTERY_FACTOR 0 // how much battery charge affects the voltage measurement in water, 0 means no effect
+static constexpr char CONFIG_NAMESPACE[] = "soil_monitor";
+static constexpr char CALIBRATION_KEY[] = "calibration";
+
+static constexpr uint16_t CALIBRATION_VERSION = 1;
+static constexpr uint16_t DEFAULT_WET_MV = 1600;
+static constexpr uint16_t DEFAULT_DRY_MV = 2550;
+static constexpr uint16_t MIN_CALIBRATION_MV = 100;
+static constexpr uint16_t MAX_CALIBRATION_MV = 3300;
+static constexpr uint16_t MIN_CALIBRATION_SPAN_MV = 100;
 
 const uint8_t buttonPin = 2;
 const uint8_t pwmPin = 21;
@@ -86,6 +93,75 @@ public:
 
 BatteryZigbeeAnalog zbMoisture = BatteryZigbeeAnalog(ENDPOINT_NUMBER);
 
+struct CalibrationRecord {
+  uint16_t version;
+  uint16_t wetMv;
+  uint16_t dryMv;
+};
+
+CalibrationRecord activeCalibration = {
+  CALIBRATION_VERSION,
+  DEFAULT_WET_MV,
+  DEFAULT_DRY_MV,
+};
+
+bool calibrationIsValid(const CalibrationRecord &calibration) {
+  return calibration.version == CALIBRATION_VERSION &&
+         calibration.wetMv >= MIN_CALIBRATION_MV &&
+         calibration.dryMv <= MAX_CALIBRATION_MV &&
+         calibration.dryMv > calibration.wetMv &&
+         calibration.dryMv - calibration.wetMv >= MIN_CALIBRATION_SPAN_MV;
+}
+
+void loadCalibration() {
+  Preferences preferences;
+  if (!preferences.begin(CONFIG_NAMESPACE, false)) {
+    return;
+  }
+
+  CalibrationRecord stored = {};
+  const size_t storedSize = preferences.isKey(CALIBRATION_KEY)
+    ? preferences.getBytesLength(CALIBRATION_KEY)
+    : 0;
+  const size_t bytesRead = storedSize == sizeof(stored)
+    ? preferences.getBytes(CALIBRATION_KEY, &stored, sizeof(stored))
+    : 0;
+  preferences.end();
+
+  if (bytesRead == sizeof(stored) && calibrationIsValid(stored)) {
+    activeCalibration = stored;
+  }
+}
+
+bool saveCalibration(uint16_t wetMv, uint16_t dryMv) {
+  const CalibrationRecord proposed = {
+    CALIBRATION_VERSION,
+    wetMv,
+    dryMv,
+  };
+  if (!calibrationIsValid(proposed)) {
+    return false;
+  }
+  if (activeCalibration.wetMv == wetMv &&
+      activeCalibration.dryMv == dryMv) {
+    return true;
+  }
+
+  Preferences preferences;
+  if (!preferences.begin(CONFIG_NAMESPACE, false)) {
+    return false;
+  }
+  const size_t bytesWritten = preferences.putBytes(
+    CALIBRATION_KEY, &proposed, sizeof(proposed));
+  preferences.end();
+  if (bytesWritten != sizeof(proposed)) {
+    return false;
+  }
+
+  activeCalibration = proposed;
+  return true;
+}
+
 uint8_t measureBatteryVoltage(){
   uint8_t voltage = analogRead(batteryPin)/100;
   return voltage;
@@ -99,18 +175,16 @@ uint8_t measureBatteryPercentage(){
   return percentage;
 }
 
-uint8_t measureMoisturePercentage(int wetVoltage = WET_VOLTAGE) {
-  uint32_t adcTotal = 0;
+uint8_t measureMoisturePercentage() {
+  uint32_t millivoltTotal = 0;
   for (uint8_t sample = 0; sample < 5; sample++) {
-    adcTotal += analogRead(sensorPin);
+    millivoltTotal += analogReadMilliVolts(sensorPin);
   }
 
-  int32_t adc = adcTotal / 5;
-  int32_t span = DRY_VOLTAGE - wetVoltage;
-  if (span <= 0) {
-    return 0;
-  }
-  int32_t moisture = (DRY_VOLTAGE - adc) * 100 / span;
+  const int32_t millivolts = millivoltTotal / 5;
+  const int32_t span = activeCalibration.dryMv - activeCalibration.wetMv;
+  const int32_t moisture =
+    (activeCalibration.dryMv - millivolts) * 100 / span;
   return constrain(moisture, 0, 100);
 }
 
@@ -125,8 +199,7 @@ static void measureAndSleep(void *arg) {
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     esp_deep_sleep_start();
   }
-  int wetVoltage = WET_VOLTAGE - BATTERY_FACTOR * (100 - batteryPercentage);
-  uint8_t moisture = measureMoisturePercentage(wetVoltage);
+  uint8_t moisture = measureMoisturePercentage();
   analogWrite(pwmPin, 0);
 
   zbMoisture.setAnalogInput(moisture);
@@ -217,6 +290,8 @@ void setup() {
   analogWriteFrequency(pwmPin, 200000);
   analogWriteResolution(pwmPin, 2);
   analogWrite(pwmPin, 2);
+
+  loadCalibration();
 
   // Init button switch
   pinMode(buttonPin, INPUT);
