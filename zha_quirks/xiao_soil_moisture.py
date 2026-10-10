@@ -101,6 +101,31 @@ class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
     .replaces(DryReportingIntervalAnalogOutput, endpoint_id=5)
     .replaces(MoistReportingIntervalAnalogOutput, endpoint_id=6)
     .replaces(DryThresholdAnalogOutput, endpoint_id=7)
+    .change_entity_metadata(
+        endpoint_id=3,
+        cluster_id=AnalogOutput.cluster_id,
+        new_entity_category=EntityType.CONFIG,
+    )
+    .change_entity_metadata(
+        endpoint_id=4,
+        cluster_id=AnalogOutput.cluster_id,
+        new_entity_category=EntityType.CONFIG,
+    )
+    .change_entity_metadata(
+        endpoint_id=5,
+        cluster_id=AnalogOutput.cluster_id,
+        new_entity_category=EntityType.CONFIG,
+    )
+    .change_entity_metadata(
+        endpoint_id=6,
+        cluster_id=AnalogOutput.cluster_id,
+        new_entity_category=EntityType.CONFIG,
+    )
+    .change_entity_metadata(
+        endpoint_id=7,
+        cluster_id=AnalogOutput.cluster_id,
+        new_entity_category=EntityType.CONFIG,
+    )
     .sensor(
         attribute_name=Basic.AttributeDefs.sw_build_id.name,
         cluster_id=Basic.cluster_id,

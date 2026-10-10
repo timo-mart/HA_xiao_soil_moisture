@@ -10,8 +10,8 @@ PlatformIO and Arduino-ESP32.
 - Factory-calibrated ESP32-C6 ADC millivolt conversion
 - Averaged battery measurement with build-time NiMH or alkaline percentage curves
 - Standard Zigbee metadata for one AA cell and a chemistry-specific software build ID
-- Persistent wet/dry calibration values exposed as ZHA Number entities
-- Persistent dry/moist reporting intervals and dry threshold exposed through ZHA
+- Persistent wet/dry calibration values exposed as ZHA Configuration Numbers
+- Persistent dry/moist reporting intervals and dry threshold in ZHA Configuration
 - Adaptive deep sleep on battery power and frequent reporting on USB power
 - Short-press configuration mode for immediate reports and setting writes
 - Ten-second button hold for Zigbee factory reset
