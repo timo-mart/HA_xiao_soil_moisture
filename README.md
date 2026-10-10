@@ -9,6 +9,7 @@ PlatformIO and Arduino-ESP32.
 - Soil moisture, calibrated sensor millivolts, and battery reporting through ZHA
 - Factory-calibrated ESP32-C6 ADC millivolt conversion
 - Averaged battery measurement with build-time NiMH or alkaline percentage curves
+- Standard Zigbee metadata for one AA cell and a chemistry-specific software build ID
 - Persistent wet/dry calibration values exposed as ZHA Number entities
 - Persistent dry/moist reporting intervals and dry threshold exposed through ZHA
 - Adaptive deep sleep on battery power and frequent reporting on USB power
@@ -53,6 +54,9 @@ pio run -e seeed_xiao_esp32_c6_alkaline
 
 Changing chemistry only changes the internal voltage-to-percentage curve. A
 normal upload preserves Zigbee pairing and stored device settings; do not erase
-the device when switching profiles.
+the device when switching profiles. ZHA can identify the installed profile from
+the standard software build ID (`dev2.08-nimh` or `dev2.08-alkaline`). The
+existing battery entity also advertises one AA cell through standard read-only
+Power Configuration attributes.
 
 OTA firmware updates are not yet implemented.

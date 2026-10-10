@@ -82,6 +82,7 @@ struct BatteryCurvePoint {
 
 #if BATTERY_CHEMISTRY == BATTERY_CHEMISTRY_NIMH
 static constexpr char BATTERY_CHEMISTRY_NAME[] = "NiMH";
+static constexpr char FIRMWARE_BUILD_ID[] = "dev2.08-nimh";
 // Terminal voltage is only an estimate of NiMH state of charge. These points
 // deliberately spread the flat discharge plateau across the useful range and
 // can be refined later from logged field data without changing Zigbee state.
@@ -98,6 +99,7 @@ static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
 };
 #else
 static constexpr char BATTERY_CHEMISTRY_NAME[] = "alkaline";
+static constexpr char FIRMWARE_BUILD_ID[] = "dev2.08-alkaline";
 static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
   {1550, 100},
   {1450, 90},
@@ -159,8 +161,43 @@ public:
       return false;
     }
     ezb_zcl_free_attr_desc(voltage);
+
+    if (!addOrSetEpClusterAttr(
+          EZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+          EZB_ZCL_CLUSTER_SERVER,
+          EZB_ZCL_ATTR_POWER_CONFIG_BATTERY_SIZE_ID,
+          &batterySize,
+          ezb_zcl_power_config_cluster_desc_add_attr)) {
+      return false;
+    }
+    if (!addOrSetEpClusterAttr(
+          EZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+          EZB_ZCL_CLUSTER_SERVER,
+          EZB_ZCL_ATTR_POWER_CONFIG_BATTERY_QUANTITY_ID,
+          &batteryQuantity,
+          ezb_zcl_power_config_cluster_desc_add_attr)) {
+      return false;
+    }
+
+    const size_t buildIdLength = strlen(FIRMWARE_BUILD_ID);
+    softwareBuildId[0] = static_cast<char>(buildIdLength);
+    memcpy(softwareBuildId + 1, FIRMWARE_BUILD_ID, buildIdLength);
+    softwareBuildId[buildIdLength + 1] = '\0';
+    if (!addOrSetEpClusterAttr(
+          EZB_ZCL_CLUSTER_ID_BASIC,
+          EZB_ZCL_CLUSTER_SERVER,
+          EZB_ZCL_ATTR_BASIC_SW_BUILD_ID_ID,
+          softwareBuildId,
+          ezb_zcl_basic_cluster_desc_add_attr)) {
+      return false;
+    }
     return true;
   }
+
+private:
+  uint8_t batterySize = EZB_ZCL_POWER_CONFIG_BATTERY_SIZE_AA;
+  uint8_t batteryQuantity = 1;
+  char softwareBuildId[ZB_MAX_NAME_LENGTH + 2] = {};
 };
 
 BatteryZigbeeAnalog zbMoisture = BatteryZigbeeAnalog(MOISTURE_ENDPOINT_NUMBER);
