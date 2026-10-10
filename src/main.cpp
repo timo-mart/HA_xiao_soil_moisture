@@ -56,7 +56,7 @@ static constexpr char CONFIG_NAMESPACE[] = "soil_monitor";
 static constexpr char CALIBRATION_KEY[] = "calibration";
 static constexpr char SLEEP_POLICY_KEY[] = "sleep_policy";
 static constexpr char DEVICE_MANUFACTURER[] = "Seeed Studio";
-static constexpr char DEVICE_MODEL[] = "Xiao Soil Moisture Sensor";
+static constexpr char DEVICE_MODEL[] = "XIAO Soil Moisture Sensor";
 
 static constexpr uint16_t CALIBRATION_VERSION = 1;
 static constexpr uint16_t DEFAULT_WET_MV = 1200;
