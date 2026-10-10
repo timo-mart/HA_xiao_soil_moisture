@@ -394,12 +394,18 @@ bool reportRawMillivolts(const MoistureReading &moisture) {
   return !moisture.valid || zbRawMillivolts.reportAnalogInput();
 }
 
+void updateRawMillivoltsAttribute(const MoistureReading &moisture) {
+  if (moisture.valid) {
+    zbRawMillivolts.setAnalogInput(moisture.millivolts);
+  }
+}
+
 void updateMoistureAttributes(const MoistureReading &moisture) {
   if (!moisture.valid) {
     return;
   }
   zbMoisture.setAnalogInput(moisture.percentage);
-  zbRawMillivolts.setAnalogInput(moisture.millivolts);
+  updateRawMillivoltsAttribute(moisture);
 }
 
 void reportBatteryAndMoisture(const MoistureReading &moisture) {
@@ -662,7 +668,7 @@ void runConfigurationMode() {
   if (deadlineReached(nextConfigurationSample)) {
     nextConfigurationSample = now + CONFIG_SAMPLE_INTERVAL_MS;
     const MoistureReading moisture = measureMoisture();
-    updateMoistureAttributes(moisture);
+    updateRawMillivoltsAttribute(moisture);
     reportRawMillivolts(moisture);
   }
 
