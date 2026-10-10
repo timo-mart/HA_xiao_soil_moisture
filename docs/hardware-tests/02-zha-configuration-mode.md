@@ -4,6 +4,17 @@ This firmware changes the Zigbee signature. Install the custom quirk, restart
 Home Assistant, erase/flash the device, remove its old ZHA entry, and perform a
 fresh battery-only pairing.
 
+The sleep-policy defaults and accepted ranges are:
+
+| Setting | Default | Range |
+| --- | ---: | ---: |
+| Dry reporting interval | 15 min | 1-10080 min |
+| Moist reporting interval | 15 min | 1-10080 min |
+| Dry threshold | 45% | 0-100% |
+
+Below the threshold the dry interval is selected; at or above it the moist
+interval is selected. The dry interval may not exceed the moist interval.
+
 ## 1. Commissioning and entities
 
 1. Start ZHA device discovery.
@@ -15,8 +26,13 @@ fresh battery-only pairing.
    - soil sensor voltage in mV
    - wet calibration Number
    - dry calibration Number
+   - dry reporting interval Number in minutes
+   - moist reporting interval Number in minutes
+   - dry threshold Number in percent
 5. Confirm the initial calibration values are 1200 mV wet and 2750 mV dry.
-6. Wait for the device to sleep and confirm the normal 15-minute report still
+6. Confirm the initial sleep policy is 15 minutes dry, 15 minutes moist, and a
+   45% threshold.
+7. Wait for the device to sleep and confirm the normal 15-minute report still
    updates moisture, raw voltage, and battery.
 
 ## 2. Short-press configuration mode
@@ -29,7 +45,11 @@ fresh battery-only pairing.
 5. Change one calibration Number in ZHA. Confirm the value is echoed back and
    that green continues blinking for about 30 seconds after the write.
 6. Change the other Number and confirm the inactivity window extends again.
-7. Let the window expire. Confirm the LED turns off, then moisture, raw voltage,
+7. Change the moist reporting interval, then the dry reporting interval, and
+   confirm both are echoed back. The dry interval must not exceed the moist
+   interval.
+8. Change the dry threshold and confirm it is echoed back.
+9. Let the window expire. Confirm the LED turns off, then moisture, raw voltage,
    and battery receive final updates before the device returns to normal sleep.
 
 ## 3. Validation and persistence
@@ -38,7 +58,14 @@ fresh battery-only pairing.
 2. Attempt a pair where dry is not at least 100 mV above wet.
 3. Confirm the firmware restores the last valid pair in ZHA.
 4. Save a distinct valid pair and let configuration mode finish.
-5. Power-cycle the device and confirm the valid pair is preserved.
+5. Enter configuration mode and attempt to set the dry reporting interval
+   above the moist interval. Confirm the saved dry value is restored in ZHA.
+6. Set a distinct valid moist interval first, then a dry interval and threshold.
+7. Power-cycle the device and confirm the valid calibration and sleep-policy
+   values are preserved.
+8. With one-minute test intervals, place the measured percentage on each side
+   of the configured threshold and confirm the serial `Sleep policy` message
+   selects the expected interval.
 
 ## 4. Zigbee factory reset
 
@@ -48,5 +75,5 @@ fresh battery-only pairing.
    two seconds after the ten-second hold threshold.
 4. Confirm the device no longer rejoins using its old Zigbee network state.
 5. Open ZHA discovery and commission it again.
-6. Confirm all five entities return and the wet/dry calibration values survived
-   the Zigbee-only reset.
+6. Confirm all eight entities return and the calibration and sleep-policy
+   values survived the Zigbee-only reset.

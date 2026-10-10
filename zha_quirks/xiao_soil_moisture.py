@@ -54,10 +54,52 @@ class DryCalibrationAnalogOutput(CustomCluster, AnalogOutput):
     }
 
 
+class DryReportingIntervalAnalogOutput(CustomCluster, AnalogOutput):
+    """Expose endpoint 5 as the dry-soil reporting interval."""
+
+    _CONSTANT_ATTRIBUTES = {
+        AnalogOutput.AttributeDefs.description.id: "Dry Reporting Interval",
+        AnalogOutput.AttributeDefs.application_type.id: 0x010EFFFF,
+        AnalogOutput.AttributeDefs.engineering_units.id: 72,
+        AnalogOutput.AttributeDefs.min_present_value.id: 1.0,
+        AnalogOutput.AttributeDefs.max_present_value.id: 10080.0,
+        AnalogOutput.AttributeDefs.resolution.id: 1.0,
+    }
+
+
+class MoistReportingIntervalAnalogOutput(CustomCluster, AnalogOutput):
+    """Expose endpoint 6 as the moist-soil reporting interval."""
+
+    _CONSTANT_ATTRIBUTES = {
+        AnalogOutput.AttributeDefs.description.id: "Moist Reporting Interval",
+        AnalogOutput.AttributeDefs.application_type.id: 0x010EFFFF,
+        AnalogOutput.AttributeDefs.engineering_units.id: 72,
+        AnalogOutput.AttributeDefs.min_present_value.id: 1.0,
+        AnalogOutput.AttributeDefs.max_present_value.id: 10080.0,
+        AnalogOutput.AttributeDefs.resolution.id: 1.0,
+    }
+
+
+class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
+    """Expose endpoint 7 as the dry-soil percentage threshold."""
+
+    _CONSTANT_ATTRIBUTES = {
+        AnalogOutput.AttributeDefs.description.id: "Dry Threshold",
+        AnalogOutput.AttributeDefs.application_type.id: 0x0104FFFF,
+        AnalogOutput.AttributeDefs.engineering_units.id: 98,
+        AnalogOutput.AttributeDefs.min_present_value.id: 0.0,
+        AnalogOutput.AttributeDefs.max_present_value.id: 100.0,
+        AnalogOutput.AttributeDefs.resolution.id: 1.0,
+    }
+
+
 (
     QuirkBuilder("Seed Studio", "Xiao Soil Moisture Sensor")
     .replaces(RawSoilVoltageAnalogInput, endpoint_id=2)
     .replaces(WetCalibrationAnalogOutput, endpoint_id=3)
     .replaces(DryCalibrationAnalogOutput, endpoint_id=4)
+    .replaces(DryReportingIntervalAnalogOutput, endpoint_id=5)
+    .replaces(MoistReportingIntervalAnalogOutput, endpoint_id=6)
+    .replaces(DryThresholdAnalogOutput, endpoint_id=7)
     .add_to_registry()
 )

@@ -19,14 +19,14 @@
 #define RAW_MILLIVOLTS_ENDPOINT_NUMBER 2
 #define WET_CALIBRATION_ENDPOINT_NUMBER 3
 #define DRY_CALIBRATION_ENDPOINT_NUMBER 4
+#define DRY_INTERVAL_ENDPOINT_NUMBER 5
+#define MOIST_INTERVAL_ENDPOINT_NUMBER 6
+#define DRY_THRESHOLD_ENDPOINT_NUMBER 7
 
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)  // 2 ^ GPIO_NUMBER in hex
 #define WAKEUP_GPIO              GPIO_NUM_2 
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP_SHORT  900         /* Sleep for 15min */
-#define TIME_TO_SLEEP_LONG  900       /* Test cadence: also wake every 15min when soil is moist */
-#define TIME_TO_SLEEP_TRESHOLD 45 /* moisture percentage below witch is period of reporting more frequent */
 #define REPORT_TIMEOUT 1000       /* Timeout for response from coordinator in ms */
 #define COMMISSIONING_TIMEOUT 60000 /* Keep a cold-booted device reachable while ZHA interviews it */
 #define COMMISSIONING_INTERVIEW_GRACE 10000 /* Let ZHA read descriptors and Basic attributes first */
@@ -43,6 +43,7 @@ static constexpr uint32_t FACTORY_RESET_LED_OFF_MS = 250;
 
 static constexpr char CONFIG_NAMESPACE[] = "soil_monitor";
 static constexpr char CALIBRATION_KEY[] = "calibration";
+static constexpr char SLEEP_POLICY_KEY[] = "sleep_policy";
 
 static constexpr uint16_t CALIBRATION_VERSION = 1;
 static constexpr uint16_t DEFAULT_WET_MV = 1200;
@@ -50,6 +51,15 @@ static constexpr uint16_t DEFAULT_DRY_MV = 2750;
 static constexpr uint16_t MIN_CALIBRATION_MV = 100;
 static constexpr uint16_t MAX_CALIBRATION_MV = 3300;
 static constexpr uint16_t MIN_CALIBRATION_SPAN_MV = 100;
+
+static constexpr uint16_t SLEEP_POLICY_VERSION = 1;
+static constexpr uint16_t DEFAULT_DRY_INTERVAL_MINUTES = 15;
+static constexpr uint16_t DEFAULT_MOIST_INTERVAL_MINUTES = 15;
+static constexpr uint16_t DEFAULT_DRY_THRESHOLD_PERCENT = 45;
+static constexpr uint16_t MIN_SLEEP_INTERVAL_MINUTES = 1;
+static constexpr uint16_t MAX_SLEEP_INTERVAL_MINUTES = 7 * 24 * 60;
+static constexpr uint16_t MIN_DRY_THRESHOLD_PERCENT = 0;
+static constexpr uint16_t MAX_DRY_THRESHOLD_PERCENT = 100;
 
 const uint8_t buttonPin = 2;
 const uint8_t pwmPin = 21;
@@ -107,6 +117,9 @@ BatteryZigbeeAnalog zbMoisture = BatteryZigbeeAnalog(MOISTURE_ENDPOINT_NUMBER);
 ZigbeeAnalog zbRawMillivolts = ZigbeeAnalog(RAW_MILLIVOLTS_ENDPOINT_NUMBER);
 ZigbeeAnalog zbWetCalibration = ZigbeeAnalog(WET_CALIBRATION_ENDPOINT_NUMBER);
 ZigbeeAnalog zbDryCalibration = ZigbeeAnalog(DRY_CALIBRATION_ENDPOINT_NUMBER);
+ZigbeeAnalog zbDryInterval = ZigbeeAnalog(DRY_INTERVAL_ENDPOINT_NUMBER);
+ZigbeeAnalog zbMoistInterval = ZigbeeAnalog(MOIST_INTERVAL_ENDPOINT_NUMBER);
+ZigbeeAnalog zbDryThreshold = ZigbeeAnalog(DRY_THRESHOLD_ENDPOINT_NUMBER);
 
 enum class BootAction {
   Normal,
@@ -145,9 +158,21 @@ struct PendingCalibrationWrites {
   float dryMv;
 };
 
+struct PendingSleepPolicyWrites {
+  bool dryIntervalPending;
+  bool moistIntervalPending;
+  bool dryThresholdPending;
+  float dryIntervalMinutes;
+  float moistIntervalMinutes;
+  float dryThresholdPercent;
+};
+
 portMUX_TYPE calibrationWriteMux = portMUX_INITIALIZER_UNLOCKED;
 PendingCalibrationWrites pendingCalibrationWrites = {};
 volatile bool syncingCalibrationOutputs = false;
+portMUX_TYPE sleepPolicyWriteMux = portMUX_INITIALIZER_UNLOCKED;
+PendingSleepPolicyWrites pendingSleepPolicyWrites = {};
+volatile bool syncingSleepPolicyOutputs = false;
 
 bool batteryPowered = false;
 bool commissioningSession = false;
@@ -168,6 +193,20 @@ CalibrationRecord activeCalibration = {
   CALIBRATION_VERSION,
   DEFAULT_WET_MV,
   DEFAULT_DRY_MV,
+};
+
+struct SleepPolicyRecord {
+  uint16_t version;
+  uint16_t dryIntervalMinutes;
+  uint16_t moistIntervalMinutes;
+  uint16_t dryThresholdPercent;
+};
+
+SleepPolicyRecord activeSleepPolicy = {
+  SLEEP_POLICY_VERSION,
+  DEFAULT_DRY_INTERVAL_MINUTES,
+  DEFAULT_MOIST_INTERVAL_MINUTES,
+  DEFAULT_DRY_THRESHOLD_PERCENT,
 };
 
 bool calibrationIsValid(const CalibrationRecord &calibration) {
@@ -227,6 +266,60 @@ bool saveCalibration(uint16_t wetMv, uint16_t dryMv) {
   return true;
 }
 
+bool sleepPolicyIsValid(const SleepPolicyRecord &policy) {
+  return policy.version == SLEEP_POLICY_VERSION &&
+         policy.dryIntervalMinutes >= MIN_SLEEP_INTERVAL_MINUTES &&
+         policy.dryIntervalMinutes <= MAX_SLEEP_INTERVAL_MINUTES &&
+         policy.moistIntervalMinutes >= MIN_SLEEP_INTERVAL_MINUTES &&
+         policy.moistIntervalMinutes <= MAX_SLEEP_INTERVAL_MINUTES &&
+         policy.dryIntervalMinutes <= policy.moistIntervalMinutes &&
+         policy.dryThresholdPercent >= MIN_DRY_THRESHOLD_PERCENT &&
+         policy.dryThresholdPercent <= MAX_DRY_THRESHOLD_PERCENT;
+}
+
+void loadSleepPolicy() {
+  Preferences preferences;
+  if (!preferences.begin(CONFIG_NAMESPACE, false)) {
+    return;
+  }
+
+  SleepPolicyRecord stored = {};
+  const size_t storedSize = preferences.isKey(SLEEP_POLICY_KEY)
+    ? preferences.getBytesLength(SLEEP_POLICY_KEY)
+    : 0;
+  const size_t bytesRead = storedSize == sizeof(stored)
+    ? preferences.getBytes(SLEEP_POLICY_KEY, &stored, sizeof(stored))
+    : 0;
+  preferences.end();
+
+  if (bytesRead == sizeof(stored) && sleepPolicyIsValid(stored)) {
+    activeSleepPolicy = stored;
+  }
+}
+
+bool saveSleepPolicy(const SleepPolicyRecord &proposed) {
+  if (!sleepPolicyIsValid(proposed)) {
+    return false;
+  }
+  if (memcmp(&activeSleepPolicy, &proposed, sizeof(proposed)) == 0) {
+    return true;
+  }
+
+  Preferences preferences;
+  if (!preferences.begin(CONFIG_NAMESPACE, false)) {
+    return false;
+  }
+  const size_t bytesWritten = preferences.putBytes(
+    SLEEP_POLICY_KEY, &proposed, sizeof(proposed));
+  preferences.end();
+  if (bytesWritten != sizeof(proposed)) {
+    return false;
+  }
+
+  activeSleepPolicy = proposed;
+  return true;
+}
+
 bool deadlineReached(uint32_t deadline) {
   return (int32_t)(millis() - deadline) >= 0;
 }
@@ -251,6 +344,36 @@ void queueDryCalibrationWrite(float dryMv) {
   portEXIT_CRITICAL(&calibrationWriteMux);
 }
 
+void queueDryIntervalWrite(float minutes) {
+  if (syncingSleepPolicyOutputs) {
+    return;
+  }
+  portENTER_CRITICAL(&sleepPolicyWriteMux);
+  pendingSleepPolicyWrites.dryIntervalMinutes = minutes;
+  pendingSleepPolicyWrites.dryIntervalPending = true;
+  portEXIT_CRITICAL(&sleepPolicyWriteMux);
+}
+
+void queueMoistIntervalWrite(float minutes) {
+  if (syncingSleepPolicyOutputs) {
+    return;
+  }
+  portENTER_CRITICAL(&sleepPolicyWriteMux);
+  pendingSleepPolicyWrites.moistIntervalMinutes = minutes;
+  pendingSleepPolicyWrites.moistIntervalPending = true;
+  portEXIT_CRITICAL(&sleepPolicyWriteMux);
+}
+
+void queueDryThresholdWrite(float percent) {
+  if (syncingSleepPolicyOutputs) {
+    return;
+  }
+  portENTER_CRITICAL(&sleepPolicyWriteMux);
+  pendingSleepPolicyWrites.dryThresholdPercent = percent;
+  pendingSleepPolicyWrites.dryThresholdPending = true;
+  portEXIT_CRITICAL(&sleepPolicyWriteMux);
+}
+
 void syncCalibrationOutputs(bool report) {
   syncingCalibrationOutputs = true;
   zbWetCalibration.setAnalogOutput(activeCalibration.wetMv);
@@ -260,6 +383,20 @@ void syncCalibrationOutputs(bool report) {
   if (report) {
     zbWetCalibration.reportAnalogOutput();
     zbDryCalibration.reportAnalogOutput();
+  }
+}
+
+void syncSleepPolicyOutputs(bool report) {
+  syncingSleepPolicyOutputs = true;
+  zbDryInterval.setAnalogOutput(activeSleepPolicy.dryIntervalMinutes);
+  zbMoistInterval.setAnalogOutput(activeSleepPolicy.moistIntervalMinutes);
+  zbDryThreshold.setAnalogOutput(activeSleepPolicy.dryThresholdPercent);
+  syncingSleepPolicyOutputs = false;
+
+  if (report) {
+    zbDryInterval.reportAnalogOutput();
+    zbMoistInterval.reportAnalogOutput();
+    zbDryThreshold.reportAnalogOutput();
   }
 }
 
@@ -304,6 +441,61 @@ void processPendingCalibrationWrites() {
   // Echo the accepted pair, or restore the previous pair after an invalid
   // write, so ZHA never displays a value the firmware did not persist.
   syncCalibrationOutputs(true);
+}
+
+void processPendingSleepPolicyWrites() {
+  PendingSleepPolicyWrites writes = {};
+  portENTER_CRITICAL(&sleepPolicyWriteMux);
+  writes = pendingSleepPolicyWrites;
+  pendingSleepPolicyWrites.dryIntervalPending = false;
+  pendingSleepPolicyWrites.moistIntervalPending = false;
+  pendingSleepPolicyWrites.dryThresholdPending = false;
+  portEXIT_CRITICAL(&sleepPolicyWriteMux);
+
+  if (!writes.dryIntervalPending && !writes.moistIntervalPending &&
+      !writes.dryThresholdPending) {
+    return;
+  }
+
+  if (configurationModeActive) {
+    configurationInactivityDeadline = millis() + CONFIG_INACTIVITY_TIMEOUT_MS;
+  }
+
+  int32_t dryInterval = activeSleepPolicy.dryIntervalMinutes;
+  int32_t moistInterval = activeSleepPolicy.moistIntervalMinutes;
+  int32_t dryThreshold = activeSleepPolicy.dryThresholdPercent;
+  if (writes.dryIntervalPending && isfinite(writes.dryIntervalMinutes)) {
+    dryInterval = lroundf(writes.dryIntervalMinutes);
+  }
+  if (writes.moistIntervalPending && isfinite(writes.moistIntervalMinutes)) {
+    moistInterval = lroundf(writes.moistIntervalMinutes);
+  }
+  if (writes.dryThresholdPending && isfinite(writes.dryThresholdPercent)) {
+    dryThreshold = lroundf(writes.dryThresholdPercent);
+  }
+
+  const bool valuesFit =
+    dryInterval >= 0 && dryInterval <= UINT16_MAX &&
+    moistInterval >= 0 && moistInterval <= UINT16_MAX &&
+    dryThreshold >= 0 && dryThreshold <= UINT16_MAX;
+  const SleepPolicyRecord proposed = {
+    SLEEP_POLICY_VERSION,
+    static_cast<uint16_t>(dryInterval),
+    static_cast<uint16_t>(moistInterval),
+    static_cast<uint16_t>(dryThreshold),
+  };
+  const bool saved = valuesFit && saveSleepPolicy(proposed);
+  if (saved) {
+    log_i(
+      "Sleep policy accepted: dry=%ld min, moist=%ld min, dry_below=%ld%%",
+      dryInterval, moistInterval, dryThreshold);
+  } else {
+    log_w(
+      "Sleep policy rejected: dry=%ld min, moist=%ld min, dry_below=%ld%%",
+      dryInterval, moistInterval, dryThreshold);
+  }
+
+  syncSleepPolicyOutputs(true);
 }
 
 uint8_t measureBatteryVoltage(){
@@ -452,6 +644,7 @@ void primeZigbeeAttributes() {
     zbMoisture.setBatteryPercentage(measureBatteryPercentage());
   }
   syncCalibrationOutputs(false);
+  syncSleepPolicyOutputs(false);
 }
 
 void runCommissioningReportWindow(
@@ -485,11 +678,18 @@ void retryMoistureReport(
 }
 
 void scheduleNextWake(const MoistureReading &moisture) {
-  const uint32_t sleepSeconds =
-    !moisture.valid || moisture.percentage < TIME_TO_SLEEP_TRESHOLD
-      ? TIME_TO_SLEEP_SHORT
-      : TIME_TO_SLEEP_LONG;
-  esp_sleep_enable_timer_wakeup(sleepSeconds * uS_TO_S_FACTOR);
+  const bool plantIsDry =
+    !moisture.valid ||
+    moisture.percentage < activeSleepPolicy.dryThresholdPercent;
+  const uint32_t sleepMinutes = plantIsDry
+    ? activeSleepPolicy.dryIntervalMinutes
+    : activeSleepPolicy.moistIntervalMinutes;
+  log_i(
+    "Sleep policy: moisture=%u%%, dry_below=%u%%, next_wake=%lu min",
+    moisture.percentage, activeSleepPolicy.dryThresholdPercent,
+    static_cast<unsigned long>(sleepMinutes));
+  esp_sleep_enable_timer_wakeup(
+    static_cast<uint64_t>(sleepMinutes) * 60ULL * uS_TO_S_FACTOR);
 }
 
 /************************ function called when on battery *****************************/
@@ -570,6 +770,7 @@ void initializeHardware() {
   analogSetPinAttenuation(batteryPin, ADC_11db);
 
   loadCalibration();
+  loadSleepPolicy();
   pinMode(buttonPin, INPUT);
 }
 
@@ -625,6 +826,33 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
   zbDryCalibration.onAnalogOutputChange(queueDryCalibrationWrite);
 
+  zbDryInterval.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbDryInterval.addAnalogOutput();
+  zbDryInterval.setAnalogOutputApplication(EZB_ZCL_AO_TIME_OTHER);
+  zbDryInterval.setAnalogOutputDescription("Dry Reporting Interval");
+  zbDryInterval.setAnalogOutputResolution(1);
+  zbDryInterval.setAnalogOutputMinMax(
+    MIN_SLEEP_INTERVAL_MINUTES, MAX_SLEEP_INTERVAL_MINUTES);
+  zbDryInterval.onAnalogOutputChange(queueDryIntervalWrite);
+
+  zbMoistInterval.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbMoistInterval.addAnalogOutput();
+  zbMoistInterval.setAnalogOutputApplication(EZB_ZCL_AO_TIME_OTHER);
+  zbMoistInterval.setAnalogOutputDescription("Moist Reporting Interval");
+  zbMoistInterval.setAnalogOutputResolution(1);
+  zbMoistInterval.setAnalogOutputMinMax(
+    MIN_SLEEP_INTERVAL_MINUTES, MAX_SLEEP_INTERVAL_MINUTES);
+  zbMoistInterval.onAnalogOutputChange(queueMoistIntervalWrite);
+
+  zbDryThreshold.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbDryThreshold.addAnalogOutput();
+  zbDryThreshold.setAnalogOutputApplication(EZB_ZCL_AO_PERCENTAGE_OTHER);
+  zbDryThreshold.setAnalogOutputDescription("Dry Threshold");
+  zbDryThreshold.setAnalogOutputResolution(1);
+  zbDryThreshold.setAnalogOutputMinMax(
+    MIN_DRY_THRESHOLD_PERCENT, MAX_DRY_THRESHOLD_PERCENT);
+  zbDryThreshold.onAnalogOutputChange(queueDryThresholdWrite);
+
   // Keep the Zigbee identity stable regardless of the current power source.
   // Battery measurements are populated later when running on battery.
   if (!zbMoisture.setBatteryPowerSource()) {
@@ -636,6 +864,9 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   Zigbee.addEndpoint(&zbRawMillivolts);
   Zigbee.addEndpoint(&zbWetCalibration);
   Zigbee.addEndpoint(&zbDryCalibration);
+  Zigbee.addEndpoint(&zbDryInterval);
+  Zigbee.addEndpoint(&zbMoistInterval);
+  Zigbee.addEndpoint(&zbDryThreshold);
   Zigbee.setTimeout(10000);
 
   if (!Zigbee.begin()) {
@@ -714,6 +945,7 @@ void startConfigurationMode() {
   zbMoisture.setBatteryPercentage(batteryPercentage);
   reportBatteryAndMoisture(moisture);
   syncCalibrationOutputs(true);
+  syncSleepPolicyOutputs(true);
 }
 
 void finishConfigurationMode() {
@@ -726,6 +958,7 @@ void finishConfigurationMode() {
   zbMoisture.setBatteryPercentage(measureBatteryPercentage());
   reportBatteryAndMoisture(moisture);
   syncCalibrationOutputs(true);
+  syncSleepPolicyOutputs(true);
   delay(500);
 
   analogWrite(pwmPin, 0);
@@ -807,6 +1040,7 @@ void setup() {
 
 void loop() {
   processPendingCalibrationWrites();
+  processPendingSleepPolicyWrites();
   if (configurationModeActive) {
     runConfigurationMode();
   }
