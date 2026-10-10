@@ -35,6 +35,8 @@
 static constexpr uint32_t CONFIG_INACTIVITY_TIMEOUT_MS = 30000;
 static constexpr uint32_t CONFIG_MAXIMUM_DURATION_MS = 120000;
 static constexpr uint32_t CONFIG_SAMPLE_INTERVAL_MS = 5000;
+static constexpr uint32_t ZIGBEE_CONNECTION_TIMEOUT_MS = 30000;
+static constexpr uint8_t CONFIG_RECOVERY_RESTARTS = 1;
 static constexpr uint32_t FACTORY_RESET_HOLD_MS = 10000;
 static constexpr uint32_t FACTORY_RESET_LED_MS = 2000;
 static constexpr uint32_t FACTORY_RESET_LED_OFF_MS = 250;
@@ -115,20 +117,25 @@ enum class BootAction {
 static constexpr uint32_t RETAINED_CONFIG_MAGIC = 0x43464731;
 RTC_NOINIT_ATTR volatile uint32_t retainedConfigMagic;
 RTC_NOINIT_ATTR volatile uint32_t retainedConfigMagicInverse;
+RTC_NOINIT_ATTR volatile uint32_t retainedConfigRestartCount;
 
 bool retainedConfigRequestIsValid() {
   return retainedConfigMagic == RETAINED_CONFIG_MAGIC &&
          retainedConfigMagicInverse == ~RETAINED_CONFIG_MAGIC;
 }
 
-void retainConfigRequest() {
+void retainConfigRequest(bool resetRestartCount) {
   retainedConfigMagic = RETAINED_CONFIG_MAGIC;
   retainedConfigMagicInverse = ~RETAINED_CONFIG_MAGIC;
+  if (resetRestartCount) {
+    retainedConfigRestartCount = 0;
+  }
 }
 
 void clearRetainedConfigRequest() {
   retainedConfigMagic = 0;
   retainedConfigMagicInverse = 0;
+  retainedConfigRestartCount = 0;
 }
 
 struct PendingCalibrationWrites {
@@ -143,6 +150,7 @@ PendingCalibrationWrites pendingCalibrationWrites = {};
 volatile bool syncingCalibrationOutputs = false;
 
 bool batteryPowered = false;
+bool commissioningSession = false;
 bool configurationModeActive = false;
 uint32_t configurationInactivityDeadline = 0;
 uint32_t configurationAbsoluteDeadline = 0;
@@ -435,6 +443,17 @@ void reportBatteryAndMoisture(const MoistureReading &moisture) {
   }
 }
 
+void primeZigbeeAttributes() {
+  // Populate readable values as soon as the endpoint descriptors exist, before
+  // ZHA can begin its interview immediately after the network connection.
+  const MoistureReading moisture = measureMoisture();
+  updateMoistureAttributes(moisture);
+  if (batteryPowered) {
+    zbMoisture.setBatteryPercentage(measureBatteryPercentage());
+  }
+  syncCalibrationOutputs(false);
+}
+
 void runCommissioningReportWindow(
     const MoistureReading &moisture, uint32_t reportDeadline) {
   vTaskDelay(COMMISSIONING_INTERVIEW_GRACE / portTICK_PERIOD_MS);
@@ -476,11 +495,9 @@ void scheduleNextWake(const MoistureReading &moisture) {
 /************************ function called when on battery *****************************/
 static void measureAndSleep(void *arg) {
   bool sent = false;
-  esp_reset_reason_t resetReason = esp_reset_reason();
-  bool commissioningBoot = resetReason != ESP_RST_DEEPSLEEP;
 
   uint8_t batteryPercentage = measureBatteryPercentage();
-  if (batteryPercentage == 0 && !commissioningBoot) {
+  if (batteryPercentage == 0 && !commissioningSession) {
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     esp_deep_sleep_start();
   }
@@ -490,7 +507,7 @@ static void measureAndSleep(void *arg) {
   updateMoistureAttributes(moisture);
 
   zbMoisture.setBatteryPercentage(batteryPercentage);
-  if (!commissioningBoot) {
+  if (!commissioningSession) {
     zbMoisture.reportBatteryPercentage();
     sent = reportMoisture(moisture);
     reportRawMillivolts(moisture);
@@ -500,8 +517,9 @@ static void measureAndSleep(void *arg) {
   indicateMoisture(moisture);
 #endif
 
-  uint32_t reportDeadline = millis() + (commissioningBoot ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
-  if (commissioningBoot) {
+  uint32_t reportDeadline = millis() +
+    (commissioningSession ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
+  if (commissioningSession) {
     runCommissioningReportWindow(moisture, reportDeadline);
   } else {
     retryMoistureReport(moisture, reportDeadline, sent);
@@ -564,13 +582,14 @@ void indicateZigbeeStartFailure() {
   }
 }
 
-void initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
+bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   // Arduino-ESP32 4 selects and initializes the Zigbee role before endpoint
   // configuration. Use its default 3-second end-device keep-alive so a sleepy
   // device polls its parent promptly during commissioning.
   esp_zigbee_device_config_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
   if (!Zigbee.role(&zigbeeConfig, eraseZigbeeStorage)) {
-    ESP.restart();
+    log_e("Failed to initialize Zigbee role");
+    return false;
   }
   Zigbee.setRxOnWhenIdle(receiverOnWhenIdle);
 
@@ -609,7 +628,8 @@ void initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   // Keep the Zigbee identity stable regardless of the current power source.
   // Battery measurements are populated later when running on battery.
   if (!zbMoisture.setBatteryPowerSource()) {
-    ESP.restart();
+    log_e("Failed to configure Zigbee battery cluster");
+    return false;
   }
 
   Zigbee.addEndpoint(&zbMoisture);
@@ -619,14 +639,53 @@ void initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   Zigbee.setTimeout(10000);
 
   if (!Zigbee.begin()) {
-    indicateZigbeeStartFailure();
-    ESP.restart();
+    log_e("Failed to start Zigbee stack");
+    return false;
   }
-  while (!Zigbee.connected()) {
+  primeZigbeeAttributes();
+
+  const uint32_t connectionDeadline =
+    millis() + ZIGBEE_CONNECTION_TIMEOUT_MS;
+  while (!Zigbee.connected() && !deadlineReached(connectionDeadline)) {
     delay(100);
   }
+  if (!Zigbee.connected()) {
+    log_e("Timed out waiting for Zigbee connection");
+    return false;
+  }
+  return true;
+}
 
-  syncCalibrationOutputs(false);
+void handleZigbeeStartupFailure(BootAction bootAction) {
+  indicateZigbeeStartFailure();
+
+  if (batteryPowered &&
+      bootAction == BootAction::Configure &&
+      retainedConfigRequestIsValid() &&
+      retainedConfigRestartCount < CONFIG_RECOVERY_RESTARTS) {
+    const uint32_t nextRestartCount = retainedConfigRestartCount + 1;
+    retainedConfigRestartCount = nextRestartCount;
+    log_w(
+      "Restarting once to recover configuration mode (attempt %lu)",
+      static_cast<unsigned long>(nextRestartCount));
+    delay(250);
+    ESP.restart();
+  }
+
+  clearRetainedConfigRequest();
+  if (batteryPowered) {
+    // Never leave a battery device stuck awake in a failed connection loop.
+    // A subsequent short press retries with the receiver continuously on.
+    log_w("Zigbee unavailable; sleeping until the next button press");
+    analogWrite(pwmPin, 0);
+    clearMoistureLeds();
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    configureButtonWakeup();
+    esp_deep_sleep_start();
+  }
+
+  delay(1000);
+  ESP.restart();
 }
 
 void startMeasurementTask() {
@@ -717,14 +776,16 @@ void setup() {
   }
 
   if (bootAction == BootAction::Configure && batteryPowered) {
-    retainConfigRequest();
+    retainConfigRequest(!recoveringConfigRequest);
   } else {
     clearRetainedConfigRequest();
   }
 
   const bool eraseZigbeeStorage = bootAction == BootAction::FactoryReset;
+  const bool commissioningBoot = esp_reset_reason() != ESP_RST_DEEPSLEEP;
+  commissioningSession = commissioningBoot || eraseZigbeeStorage;
   const bool receiverOnWhenIdle =
-    !batteryPowered || bootAction != BootAction::Normal;
+    !batteryPowered || commissioningSession || bootAction != BootAction::Normal;
 
   log_i(
     "Boot mode: power=%s, action=%u, rx_on_when_idle=%s",
@@ -732,7 +793,10 @@ void setup() {
     static_cast<unsigned>(bootAction),
     receiverOnWhenIdle ? "true" : "false");
 
-  initializeZigbee(eraseZigbeeStorage, receiverOnWhenIdle);
+  if (!initializeZigbee(eraseZigbeeStorage, receiverOnWhenIdle)) {
+    handleZigbeeStartupFailure(bootAction);
+    return;
+  }
 
   if (bootAction == BootAction::Configure && batteryPowered) {
     startConfigurationMode();
