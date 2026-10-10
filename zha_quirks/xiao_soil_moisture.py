@@ -1,8 +1,8 @@
 """ZHA entities for the XIAO Zigbee soil moisture sensor."""
 
-from zigpy.zcl.clusters.general import AnalogInput, AnalogOutput
+from zigpy.zcl.clusters.general import AnalogInput, AnalogOutput, Basic
 
-from zhaquirks.builder import QuirkBuilder
+from zhaquirks.builder import EntityType, QuirkBuilder
 from zhaquirks.clusters import CustomCluster
 
 
@@ -101,5 +101,13 @@ class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
     .replaces(DryReportingIntervalAnalogOutput, endpoint_id=5)
     .replaces(MoistReportingIntervalAnalogOutput, endpoint_id=6)
     .replaces(DryThresholdAnalogOutput, endpoint_id=7)
+    .sensor(
+        attribute_name=Basic.AttributeDefs.sw_build_id.name,
+        cluster_id=Basic.cluster_id,
+        endpoint_id=1,
+        entity_type=EntityType.DIAGNOSTIC,
+        translation_key="sw_build_id",
+        fallback_name="Firmware version",
+    )
     .add_to_registry()
 )

@@ -36,7 +36,7 @@ operation, reports once more, and schedules its next wake from the saved policy.
 
 Install the custom quirk in [`zha_quirks`](zha_quirks/README.md) to give the raw
 voltage, calibration, and sleep-policy entities their correct names, units, and
-ranges.
+ranges, and to expose the software build ID as a diagnostic sensor.
 
 ## Build
 
@@ -56,7 +56,8 @@ Changing chemistry only changes the internal voltage-to-percentage curve. A
 normal upload preserves Zigbee pairing and stored device settings; do not erase
 the device when switching profiles. ZHA can identify the installed profile from
 the standard software build ID (`dev2.08-nimh` or `dev2.08-alkaline`). The
-existing battery entity also advertises one AA cell through standard read-only
-Power Configuration attributes.
+custom quirk displays that value as a diagnostic Firmware version sensor without
+periodic reporting. The existing battery entity also advertises one AA cell
+through standard read-only Power Configuration attributes.
 
 OTA firmware updates are not yet implemented.

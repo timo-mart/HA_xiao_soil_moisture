@@ -17,7 +17,9 @@ zha:
 Restart Home Assistant after copying or changing the quirk. The device page
 should then show the soil sensor voltage in mV; writable wet/dry calibration
 Numbers; dry and moist reporting intervals in minutes; and a dry-threshold
-percentage Number.
+percentage Number. It also exposes the standard software build ID as a
+diagnostic Firmware version sensor. That sensor does not configure periodic
+attribute reporting.
 
 Because this firmware adds endpoints 2-7 to the Zigbee device signature,
 remove an older version of the device from ZHA and pair it again after flashing.
