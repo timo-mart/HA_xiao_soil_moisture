@@ -24,6 +24,7 @@
 #define TIME_TO_SLEEP_TRESHOLD 45 /* moisture percentage below witch is period of reporting more frequent */
 #define REPORT_TIMEOUT 1000       /* Timeout for response from coordinator in ms */
 #define COMMISSIONING_TIMEOUT 60000 /* Keep a cold-booted device reachable while ZHA interviews it */
+#define COMMISSIONING_REPORT_INTERVAL 5000 /* Keep Zigbee traffic flowing while ZHA configures the device */
 
 #define WET_VOLTAGE 1600 // voltage at full water saturation
 #define DRY_VOLTAGE 2550 // voltage at dry soil
@@ -139,9 +140,20 @@ static void measureAndSleep(void *arg) {
 #endif
 
   uint32_t reportDeadline = millis() + (commissioningBoot ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
-  while ((commissioningBoot || !sent) && (int32_t)(reportDeadline - millis()) > 0) {
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    if (!sent) {
+  if (commissioningBoot) {
+    while ((int32_t)(reportDeadline - millis()) > 0) {
+      uint32_t remaining = reportDeadline - millis();
+      uint32_t delayMs = min(remaining, (uint32_t)COMMISSIONING_REPORT_INTERVAL);
+      vTaskDelay(delayMs / portTICK_PERIOD_MS);
+
+      // Regular reports keep a sleepy device exchanging traffic with its
+      // parent while ZHA binds clusters and configures attribute reporting.
+      zbMoisture.reportBatteryPercentage();
+      zbMoisture.reportAnalogInput();
+    }
+  } else {
+    while (!sent && (int32_t)(reportDeadline - millis()) > 0) {
+      vTaskDelay(500 / portTICK_PERIOD_MS);
       sent = zbMoisture.reportAnalogInput();
     }
   }
