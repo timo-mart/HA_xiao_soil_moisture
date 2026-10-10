@@ -112,6 +112,25 @@ enum class BootAction {
   FactoryReset,
 };
 
+static constexpr uint32_t RETAINED_CONFIG_MAGIC = 0x43464731;
+RTC_NOINIT_ATTR volatile uint32_t retainedConfigMagic;
+RTC_NOINIT_ATTR volatile uint32_t retainedConfigMagicInverse;
+
+bool retainedConfigRequestIsValid() {
+  return retainedConfigMagic == RETAINED_CONFIG_MAGIC &&
+         retainedConfigMagicInverse == ~RETAINED_CONFIG_MAGIC;
+}
+
+void retainConfigRequest() {
+  retainedConfigMagic = RETAINED_CONFIG_MAGIC;
+  retainedConfigMagicInverse = ~RETAINED_CONFIG_MAGIC;
+}
+
+void clearRetainedConfigRequest() {
+  retainedConfigMagic = 0;
+  retainedConfigMagicInverse = 0;
+}
+
 struct PendingCalibrationWrites {
   bool wetPending;
   bool dryPending;
@@ -620,6 +639,7 @@ void startMeasurementTask() {
 }
 
 void startConfigurationMode() {
+  clearRetainedConfigRequest();
   configurationModeActive = true;
   const uint32_t now = millis();
   configurationInactivityDeadline = now + CONFIG_INACTIVITY_TIMEOUT_MS;
@@ -683,7 +703,25 @@ void runConfigurationMode() {
 void setup() {
   initializeHardware();
   batteryPowered = measureBatteryVoltage() > 1;
-  const BootAction bootAction = determineBootAction();
+  BootAction bootAction = determineBootAction();
+  const bool recoveringConfigRequest =
+    bootAction == BootAction::Normal &&
+    batteryPowered &&
+    esp_reset_reason() == ESP_RST_SW &&
+    retainedConfigRequestIsValid();
+  if (recoveringConfigRequest) {
+    bootAction = BootAction::Configure;
+    clearMoistureLeds();
+    digitalWrite(ledGreenPin, 1);
+    log_i("Recovering configuration mode after software restart");
+  }
+
+  if (bootAction == BootAction::Configure && batteryPowered) {
+    retainConfigRequest();
+  } else {
+    clearRetainedConfigRequest();
+  }
+
   const bool eraseZigbeeStorage = bootAction == BootAction::FactoryReset;
   const bool receiverOnWhenIdle =
     !batteryPowered || bootAction != BootAction::Normal;
