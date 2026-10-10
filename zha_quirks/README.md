@@ -22,5 +22,10 @@ Configuration section. The quirk also exposes the standard software build ID
 as a diagnostic Firmware version sensor. That sensor does not configure
 periodic attribute reporting.
 
+The quirk assigns Home Assistant device classes matching each value: moisture
+for the soil reading and dry threshold, voltage for the raw sensor output and
+calibration points, duration for the reporting intervals, and battery for the
+standard battery entity.
+
 Because this firmware adds endpoints 2-7 to the Zigbee device signature,
 remove an older version of the device from ZHA and pair it again after flashing.

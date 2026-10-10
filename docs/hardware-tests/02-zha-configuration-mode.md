@@ -31,10 +31,13 @@ interval is selected. The dry interval may not exceed the moist interval.
    - dry threshold Number in percent
 5. Confirm the five writable Numbers appear in the device's Configuration
    section, while moisture, battery, and raw voltage remain ordinary sensors.
-6. Confirm the initial calibration values are 1200 mV wet and 2750 mV dry.
-7. Confirm the initial sleep policy is 15 minutes dry, 15 minutes moist, and a
+6. Confirm the entity metadata uses the moisture device class for soil
+   moisture and dry threshold, voltage for raw voltage and both calibration
+   Numbers, duration for both reporting intervals, and battery for battery.
+7. Confirm the initial calibration values are 1200 mV wet and 2750 mV dry.
+8. Confirm the initial sleep policy is 15 minutes dry, 15 minutes moist, and a
    45% threshold.
-8. Wait for the device to sleep and confirm the normal 15-minute report still
+9. Wait for the device to sleep and confirm the normal 15-minute report still
    updates moisture, raw voltage, and battery.
 
 ## 2. Short-press configuration mode

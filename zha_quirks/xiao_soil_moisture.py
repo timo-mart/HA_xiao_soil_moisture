@@ -2,7 +2,12 @@
 
 from zigpy.zcl.clusters.general import AnalogInput, AnalogOutput, Basic
 
-from zhaquirks.builder import EntityType, QuirkBuilder
+from zhaquirks.builder import (
+    EntityType,
+    NumberDeviceClass,
+    QuirkBuilder,
+    SensorDeviceClass,
+)
 from zhaquirks.clusters import CustomCluster
 
 
@@ -102,28 +107,43 @@ class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
     .replaces(MoistReportingIntervalAnalogOutput, endpoint_id=6)
     .replaces(DryThresholdAnalogOutput, endpoint_id=7)
     .change_entity_metadata(
+        endpoint_id=1,
+        cluster_id=AnalogInput.cluster_id,
+        new_device_class=SensorDeviceClass.MOISTURE,
+    )
+    .change_entity_metadata(
+        endpoint_id=2,
+        cluster_id=AnalogInput.cluster_id,
+        new_device_class=SensorDeviceClass.VOLTAGE,
+    )
+    .change_entity_metadata(
         endpoint_id=3,
         cluster_id=AnalogOutput.cluster_id,
+        new_device_class=NumberDeviceClass.VOLTAGE,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=4,
         cluster_id=AnalogOutput.cluster_id,
+        new_device_class=NumberDeviceClass.VOLTAGE,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=5,
         cluster_id=AnalogOutput.cluster_id,
+        new_device_class=NumberDeviceClass.DURATION,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=6,
         cluster_id=AnalogOutput.cluster_id,
+        new_device_class=NumberDeviceClass.DURATION,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=7,
         cluster_id=AnalogOutput.cluster_id,
+        new_device_class=NumberDeviceClass.MOISTURE,
         new_entity_category=EntityType.CONFIG,
     )
     .sensor(
