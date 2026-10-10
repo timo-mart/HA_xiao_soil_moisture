@@ -15,7 +15,10 @@
 
 #define USE_LED_ON_BATTERY 0 // when 1 LED blink shortly when reporting
 
-#define ENDPOINT_NUMBER 1
+#define MOISTURE_ENDPOINT_NUMBER 1
+#define RAW_MILLIVOLTS_ENDPOINT_NUMBER 2
+#define WET_CALIBRATION_ENDPOINT_NUMBER 3
+#define DRY_CALIBRATION_ENDPOINT_NUMBER 4
 
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)  // 2 ^ GPIO_NUMBER in hex
 #define WAKEUP_GPIO              GPIO_NUM_2 
@@ -28,6 +31,13 @@
 #define COMMISSIONING_TIMEOUT 60000 /* Keep a cold-booted device reachable while ZHA interviews it */
 #define COMMISSIONING_INTERVIEW_GRACE 10000 /* Let ZHA read descriptors and Basic attributes first */
 #define COMMISSIONING_REPORT_INTERVAL 5000 /* Keep Zigbee traffic flowing while ZHA configures the device */
+
+static constexpr uint32_t CONFIG_INACTIVITY_TIMEOUT_MS = 30000;
+static constexpr uint32_t CONFIG_MAXIMUM_DURATION_MS = 120000;
+static constexpr uint32_t CONFIG_SAMPLE_INTERVAL_MS = 5000;
+static constexpr uint32_t FACTORY_RESET_HOLD_MS = 10000;
+static constexpr uint32_t FACTORY_RESET_LED_MS = 2000;
+static constexpr uint32_t FACTORY_RESET_LED_OFF_MS = 250;
 
 static constexpr char CONFIG_NAMESPACE[] = "soil_monitor";
 static constexpr char CALIBRATION_KEY[] = "calibration";
@@ -91,7 +101,35 @@ public:
   }
 };
 
-BatteryZigbeeAnalog zbMoisture = BatteryZigbeeAnalog(ENDPOINT_NUMBER);
+BatteryZigbeeAnalog zbMoisture = BatteryZigbeeAnalog(MOISTURE_ENDPOINT_NUMBER);
+ZigbeeAnalog zbRawMillivolts = ZigbeeAnalog(RAW_MILLIVOLTS_ENDPOINT_NUMBER);
+ZigbeeAnalog zbWetCalibration = ZigbeeAnalog(WET_CALIBRATION_ENDPOINT_NUMBER);
+ZigbeeAnalog zbDryCalibration = ZigbeeAnalog(DRY_CALIBRATION_ENDPOINT_NUMBER);
+
+enum class BootAction {
+  Normal,
+  Configure,
+  FactoryReset,
+};
+
+struct PendingCalibrationWrites {
+  bool wetPending;
+  bool dryPending;
+  float wetMv;
+  float dryMv;
+};
+
+portMUX_TYPE calibrationWriteMux = portMUX_INITIALIZER_UNLOCKED;
+PendingCalibrationWrites pendingCalibrationWrites = {};
+volatile bool syncingCalibrationOutputs = false;
+
+bool batteryPowered = false;
+bool configurationModeActive = false;
+uint32_t configurationInactivityDeadline = 0;
+uint32_t configurationAbsoluteDeadline = 0;
+uint32_t nextConfigurationSample = 0;
+uint32_t nextConfigurationLedToggle = 0;
+bool configurationLedOn = true;
 
 struct CalibrationRecord {
   uint16_t version;
@@ -162,6 +200,85 @@ bool saveCalibration(uint16_t wetMv, uint16_t dryMv) {
   return true;
 }
 
+bool deadlineReached(uint32_t deadline) {
+  return (int32_t)(millis() - deadline) >= 0;
+}
+
+void queueWetCalibrationWrite(float wetMv) {
+  if (syncingCalibrationOutputs) {
+    return;
+  }
+  portENTER_CRITICAL(&calibrationWriteMux);
+  pendingCalibrationWrites.wetMv = wetMv;
+  pendingCalibrationWrites.wetPending = true;
+  portEXIT_CRITICAL(&calibrationWriteMux);
+}
+
+void queueDryCalibrationWrite(float dryMv) {
+  if (syncingCalibrationOutputs) {
+    return;
+  }
+  portENTER_CRITICAL(&calibrationWriteMux);
+  pendingCalibrationWrites.dryMv = dryMv;
+  pendingCalibrationWrites.dryPending = true;
+  portEXIT_CRITICAL(&calibrationWriteMux);
+}
+
+void syncCalibrationOutputs(bool report) {
+  syncingCalibrationOutputs = true;
+  zbWetCalibration.setAnalogOutput(activeCalibration.wetMv);
+  zbDryCalibration.setAnalogOutput(activeCalibration.dryMv);
+  syncingCalibrationOutputs = false;
+
+  if (report) {
+    zbWetCalibration.reportAnalogOutput();
+    zbDryCalibration.reportAnalogOutput();
+  }
+}
+
+void processPendingCalibrationWrites() {
+  PendingCalibrationWrites writes = {};
+  portENTER_CRITICAL(&calibrationWriteMux);
+  writes = pendingCalibrationWrites;
+  pendingCalibrationWrites.wetPending = false;
+  pendingCalibrationWrites.dryPending = false;
+  portEXIT_CRITICAL(&calibrationWriteMux);
+
+  if (!writes.wetPending && !writes.dryPending) {
+    return;
+  }
+
+  // A write means the user is still configuring the device. Extend the
+  // inactivity window even when the proposed calibration is rejected.
+  if (configurationModeActive) {
+    configurationInactivityDeadline = millis() + CONFIG_INACTIVITY_TIMEOUT_MS;
+  }
+
+  int32_t wetMv = activeCalibration.wetMv;
+  int32_t dryMv = activeCalibration.dryMv;
+  if (writes.wetPending && isfinite(writes.wetMv)) {
+    wetMv = lroundf(writes.wetMv);
+  }
+  if (writes.dryPending && isfinite(writes.dryMv)) {
+    dryMv = lroundf(writes.dryMv);
+  }
+
+  const bool valuesFit =
+    wetMv >= 0 && wetMv <= UINT16_MAX &&
+    dryMv >= 0 && dryMv <= UINT16_MAX;
+  const bool saved = valuesFit && saveCalibration(
+    static_cast<uint16_t>(wetMv), static_cast<uint16_t>(dryMv));
+  if (saved) {
+    log_i("Calibration accepted: wet=%ld mV, dry=%ld mV", wetMv, dryMv);
+  } else {
+    log_w("Calibration rejected: wet=%ld mV, dry=%ld mV", wetMv, dryMv);
+  }
+
+  // Echo the accepted pair, or restore the previous pair after an invalid
+  // write, so ZHA never displays a value the firmware did not persist.
+  syncCalibrationOutputs(true);
+}
+
 uint8_t measureBatteryVoltage(){
   uint8_t voltage = analogRead(batteryPin)/100;
   return voltage;
@@ -213,6 +330,52 @@ void clearMoistureLeds() {
   digitalWrite(ledYellowPin, 0);
 }
 
+void configureButtonWakeup() {
+  esp_sleep_enable_ext1_wakeup_io(
+    BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
+  gpio_pullup_dis(WAKEUP_GPIO);
+  gpio_pulldown_dis(WAKEUP_GPIO);
+}
+
+BootAction determineBootAction() {
+  const bool wokeFromButton =
+    (esp_sleep_get_wakeup_causes() &
+      (1UL << ESP_SLEEP_WAKEUP_EXT1)) != 0 &&
+    (esp_sleep_get_ext1_wakeup_status() &
+      BUTTON_PIN_BITMASK(WAKEUP_GPIO)) != 0;
+  const bool buttonHeld = digitalRead(buttonPin) == LOW;
+  if (!wokeFromButton && !buttonHeld) {
+    return BootAction::Normal;
+  }
+
+  // Acknowledge the wake immediately. This happens before Zigbee startup, so
+  // the user is not left waiting through a potentially slow parent rejoin.
+  clearMoistureLeds();
+  digitalWrite(ledYellowPin, 1);
+
+  if (buttonHeld) {
+    const uint32_t holdStarted = millis();
+    while (digitalRead(buttonPin) == LOW) {
+      if (millis() - holdStarted >= FACTORY_RESET_HOLD_MS) {
+        clearMoistureLeds();
+        digitalWrite(ledRedPin, 1);
+        delay(FACTORY_RESET_LED_MS);
+        digitalWrite(ledRedPin, 0);
+        delay(FACTORY_RESET_LED_OFF_MS);
+        log_i("Factory reset gesture accepted");
+        return BootAction::FactoryReset;
+      }
+      delay(20);
+    }
+    delay(30);
+  }
+
+  clearMoistureLeds();
+  digitalWrite(ledGreenPin, 1);
+  log_i("Configuration gesture accepted");
+  return BootAction::Configure;
+}
+
 void indicateMoisture(const MoistureReading &moisture) {
   if (!moisture.valid || moisture.percentage <= 40) {
     digitalWrite(ledRedPin, 1);
@@ -227,10 +390,23 @@ bool reportMoisture(const MoistureReading &moisture) {
   return !moisture.valid || zbMoisture.reportAnalogInput();
 }
 
+bool reportRawMillivolts(const MoistureReading &moisture) {
+  return !moisture.valid || zbRawMillivolts.reportAnalogInput();
+}
+
+void updateMoistureAttributes(const MoistureReading &moisture) {
+  if (!moisture.valid) {
+    return;
+  }
+  zbMoisture.setAnalogInput(moisture.percentage);
+  zbRawMillivolts.setAnalogInput(moisture.millivolts);
+}
+
 void reportBatteryAndMoisture(const MoistureReading &moisture) {
   zbMoisture.reportBatteryPercentage();
   if (moisture.valid) {
     zbMoisture.reportAnalogInput();
+    zbRawMillivolts.reportAnalogInput();
   }
 }
 
@@ -286,14 +462,13 @@ static void measureAndSleep(void *arg) {
   const MoistureReading moisture = measureMoisture();
   analogWrite(pwmPin, 0);
 
-  if (moisture.valid) {
-    zbMoisture.setAnalogInput(moisture.percentage);
-  }
+  updateMoistureAttributes(moisture);
 
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningBoot) {
     zbMoisture.reportBatteryPercentage();
     sent = reportMoisture(moisture);
+    reportRawMillivolts(moisture);
   }
 
 #if USE_LED_ON_BATTERY
@@ -326,9 +501,10 @@ static void measure(void *arg) {
     clearMoistureLeds();
 
     if (moisture.valid) {
-      zbMoisture.setAnalogInput(moisture.percentage);
+      updateMoistureAttributes(moisture);
       indicateMoisture(moisture);
       zbMoisture.reportAnalogInput();
+      zbRawMillivolts.reportAnalogInput();
     }
 
     vTaskDelay(5000 / portTICK_PERIOD_MS); // wait for 5s before measuring again, the reporting interval is not critical when the device is plugged in, so we can afford to report more frequently to get more accurate data
@@ -363,21 +539,47 @@ void indicateZigbeeStartFailure() {
   }
 }
 
-void initializeZigbee() {
+void initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   // Arduino-ESP32 4 selects and initializes the Zigbee role before endpoint
   // configuration. Use its default 3-second end-device keep-alive so a sleepy
   // device polls its parent promptly during commissioning.
   esp_zigbee_device_config_t zigbeeConfig = ZIGBEE_DEFAULT_ED_CONFIG();
-  if (!Zigbee.role(&zigbeeConfig, false)) {
+  if (!Zigbee.role(&zigbeeConfig, eraseZigbeeStorage)) {
     ESP.restart();
   }
-  Zigbee.setRxOnWhenIdle(false);
+  Zigbee.setRxOnWhenIdle(receiverOnWhenIdle);
 
   zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
   zbMoisture.addAnalogInput();
   zbMoisture.setAnalogInputApplication(EZB_ZCL_AI_PERCENTAGE_OTHER);
   zbMoisture.setAnalogInputDescription("Soil Moisture");
   zbMoisture.setAnalogInputResolution(1);
+
+  zbRawMillivolts.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbRawMillivolts.addAnalogInput();
+  zbRawMillivolts.setAnalogInputApplication(0x000C0000);
+  zbRawMillivolts.setAnalogInputDescription("Soil Sensor Voltage");
+  zbRawMillivolts.setAnalogInputResolution(1);
+  zbRawMillivolts.setAnalogInputMinMax(
+    MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
+
+  zbWetCalibration.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbWetCalibration.addAnalogOutput();
+  zbWetCalibration.setAnalogOutputApplication(0x000C0000);
+  zbWetCalibration.setAnalogOutputDescription("Wet Calibration");
+  zbWetCalibration.setAnalogOutputResolution(1);
+  zbWetCalibration.setAnalogOutputMinMax(
+    MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
+  zbWetCalibration.onAnalogOutputChange(queueWetCalibrationWrite);
+
+  zbDryCalibration.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbDryCalibration.addAnalogOutput();
+  zbDryCalibration.setAnalogOutputApplication(0x000C0000);
+  zbDryCalibration.setAnalogOutputDescription("Dry Calibration");
+  zbDryCalibration.setAnalogOutputResolution(1);
+  zbDryCalibration.setAnalogOutputMinMax(
+    MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
+  zbDryCalibration.onAnalogOutputChange(queueDryCalibrationWrite);
 
   // Keep the Zigbee identity stable regardless of the current power source.
   // Battery measurements are populated later when running on battery.
@@ -386,6 +588,9 @@ void initializeZigbee() {
   }
 
   Zigbee.addEndpoint(&zbMoisture);
+  Zigbee.addEndpoint(&zbRawMillivolts);
+  Zigbee.addEndpoint(&zbWetCalibration);
+  Zigbee.addEndpoint(&zbDryCalibration);
   Zigbee.setTimeout(10000);
 
   if (!Zigbee.begin()) {
@@ -395,44 +600,107 @@ void initializeZigbee() {
   while (!Zigbee.connected()) {
     delay(100);
   }
+
+  syncCalibrationOutputs(false);
 }
 
 void startMeasurementTask() {
-  if (measureBatteryVoltage() > 1) {
-    esp_sleep_enable_ext1_wakeup_io(
-      BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
-    gpio_pullup_dis(WAKEUP_GPIO);
-    gpio_pulldown_dis(WAKEUP_GPIO);
+  if (batteryPowered) {
+    configureButtonWakeup();
     xTaskCreate(measureAndSleep, "sensor_update", 2048, NULL, 10, NULL);
   } else {
     xTaskCreate(measure, "sensor_update", 2048, NULL, 10, NULL);
   }
 }
 
+void startConfigurationMode() {
+  configurationModeActive = true;
+  const uint32_t now = millis();
+  configurationInactivityDeadline = now + CONFIG_INACTIVITY_TIMEOUT_MS;
+  configurationAbsoluteDeadline = now + CONFIG_MAXIMUM_DURATION_MS;
+  nextConfigurationSample = now + CONFIG_SAMPLE_INTERVAL_MS;
+  nextConfigurationLedToggle = now + 500;
+  configurationLedOn = true;
+  log_i("Configuration mode ready");
+
+  const MoistureReading moisture = measureMoisture();
+  const uint8_t batteryPercentage = measureBatteryPercentage();
+  updateMoistureAttributes(moisture);
+  zbMoisture.setBatteryPercentage(batteryPercentage);
+  reportBatteryAndMoisture(moisture);
+  syncCalibrationOutputs(true);
+}
+
+void finishConfigurationMode() {
+  log_i("Configuration mode finished");
+  // Publish one final measurement using the calibration that was accepted
+  // during this window. The one-second deep-sleep hop below then restores the
+  // ordinary sleepy-device boot path and sends the same values once more.
+  const MoistureReading moisture = measureMoisture();
+  updateMoistureAttributes(moisture);
+  zbMoisture.setBatteryPercentage(measureBatteryPercentage());
+  reportBatteryAndMoisture(moisture);
+  syncCalibrationOutputs(true);
+  delay(500);
+
+  analogWrite(pwmPin, 0);
+  clearMoistureLeds();
+  configurationModeActive = false;
+  configureButtonWakeup();
+  esp_sleep_enable_timer_wakeup(1 * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();
+}
+
+void runConfigurationMode() {
+  const uint32_t now = millis();
+  if (deadlineReached(configurationInactivityDeadline) ||
+      deadlineReached(configurationAbsoluteDeadline)) {
+    finishConfigurationMode();
+    return;
+  }
+
+  if (deadlineReached(nextConfigurationSample)) {
+    nextConfigurationSample = now + CONFIG_SAMPLE_INTERVAL_MS;
+    const MoistureReading moisture = measureMoisture();
+    updateMoistureAttributes(moisture);
+    reportRawMillivolts(moisture);
+  }
+
+  if (deadlineReached(nextConfigurationLedToggle)) {
+    configurationLedOn = !configurationLedOn;
+    digitalWrite(ledGreenPin, configurationLedOn);
+    nextConfigurationLedToggle = now + 500;
+  }
+}
+
 /********************* Arduino functions **************************/
 void setup() {
   initializeHardware();
-  initializeZigbee();
-  startMeasurementTask();
+  batteryPowered = measureBatteryVoltage() > 1;
+  const BootAction bootAction = determineBootAction();
+  const bool eraseZigbeeStorage = bootAction == BootAction::FactoryReset;
+  const bool receiverOnWhenIdle =
+    !batteryPowered || bootAction != BootAction::Normal;
+
+  log_i(
+    "Boot mode: power=%s, action=%u, rx_on_when_idle=%s",
+    batteryPowered ? "battery" : "usb",
+    static_cast<unsigned>(bootAction),
+    receiverOnWhenIdle ? "true" : "false");
+
+  initializeZigbee(eraseZigbeeStorage, receiverOnWhenIdle);
+
+  if (bootAction == BootAction::Configure && batteryPowered) {
+    startConfigurationMode();
+  } else {
+    startMeasurementTask();
+  }
 }
 
 void loop() {
-  // Checking button for factory reset
-  if (digitalRead(buttonPin) == LOW) {  // Push button pressed
-    // Key debounce handling
-    delay(100);
-    int startTime = millis();
-    while (digitalRead(buttonPin) == LOW) {
-      delay(50);
-      if ((millis() - startTime) > 10000) {
-        // If key pressed for more than 10secs, factory reset Zigbee and reboot
-        delay(1000);
-        // Optional set reset in factoryReset to false, to not restart device after erasing nvram, but set it to endless sleep manually instead
-        //Zigbee.factoryReset(false);
-        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-        esp_deep_sleep_start();
-      }
-    }
+  processPendingCalibrationWrites();
+  if (configurationModeActive) {
+    runConfigurationMode();
   }
-  delay(100);
+  delay(20);
 }
