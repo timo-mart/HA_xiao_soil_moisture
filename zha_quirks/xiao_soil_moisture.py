@@ -113,7 +113,8 @@ class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
 
 
 (
-    QuirkBuilder("Seed Studio", "Xiao Soil Moisture Sensor")
+    QuirkBuilder("Seeed Studio", "Xiao Soil Moisture Sensor")
+    .applies_to("Seed Studio", "Xiao Soil Moisture Sensor")
     .replaces(SoilMoistureAnalogInput, endpoint_id=1)
     .replaces(RawSoilVoltageAnalogInput, endpoint_id=2)
     .replaces(WetCalibrationAnalogOutput, endpoint_id=3)

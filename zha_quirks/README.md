@@ -27,5 +27,9 @@ for the soil reading and dry threshold, voltage for the raw sensor output and
 calibration points, duration for the reporting intervals, and battery for the
 standard battery entity.
 
+The current firmware identifies the manufacturer as `Seeed Studio`. The quirk
+also accepts the older misspelled `Seed Studio` identity so devices paired with
+an earlier development build continue to load it.
+
 Because this firmware adds endpoints 2-7 to the Zigbee device signature,
 remove an older version of the device from ZHA and pair it again after flashing.

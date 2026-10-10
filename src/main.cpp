@@ -1,4 +1,5 @@
-// This is firmaware for Seed Studio Xiao Soil Mosture Sensor based on ESP32C6 communicating via Zigbee in End Device mode. 
+// Firmware for the Seeed Studio XIAO Soil Moisture Sensor, based on the
+// ESP32-C6 and communicating as a Zigbee end device.
 // The device measures soil moisture and reports it to the coordinator, then goes to deep sleep to save battery. 
 // When the device is plugged in, it reports more frequently and indicates the moisture level by LED. 
 // The device can be woken up by a button press, which can be used for factory reset if the button is pressed for more than 10 seconds.
@@ -54,6 +55,8 @@ static constexpr uint32_t FACTORY_RESET_LED_OFF_MS = 250;
 static constexpr char CONFIG_NAMESPACE[] = "soil_monitor";
 static constexpr char CALIBRATION_KEY[] = "calibration";
 static constexpr char SLEEP_POLICY_KEY[] = "sleep_policy";
+static constexpr char DEVICE_MANUFACTURER[] = "Seeed Studio";
+static constexpr char DEVICE_MODEL[] = "Xiao Soil Moisture Sensor";
 
 static constexpr uint16_t CALIBRATION_VERSION = 1;
 static constexpr uint16_t DEFAULT_WET_MV = 1200;
@@ -909,13 +912,13 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   }
   Zigbee.setRxOnWhenIdle(receiverOnWhenIdle);
 
-  zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbMoisture.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbMoisture.addAnalogInput();
   zbMoisture.setAnalogInputApplication(EZB_ZCL_AI_PERCENTAGE_OTHER);
   zbMoisture.setAnalogInputDescription("Soil Moisture");
   zbMoisture.setAnalogInputResolution(1);
 
-  zbRawMillivolts.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbRawMillivolts.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbRawMillivolts.addAnalogInput();
   zbRawMillivolts.setAnalogInputApplication(0x000C0000);
   zbRawMillivolts.setAnalogInputDescription("Soil Sensor Voltage");
@@ -923,7 +926,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
   zbRawMillivolts.setAnalogInputMinMax(
     MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
 
-  zbWetCalibration.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbWetCalibration.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbWetCalibration.addAnalogOutput();
   zbWetCalibration.setAnalogOutputApplication(0x000C0000);
   zbWetCalibration.setAnalogOutputDescription("Wet Calibration");
@@ -932,7 +935,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
   zbWetCalibration.onAnalogOutputChange(queueWetCalibrationWrite);
 
-  zbDryCalibration.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbDryCalibration.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbDryCalibration.addAnalogOutput();
   zbDryCalibration.setAnalogOutputApplication(0x000C0000);
   zbDryCalibration.setAnalogOutputDescription("Dry Calibration");
@@ -941,7 +944,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     MIN_CALIBRATION_MV, MAX_CALIBRATION_MV);
   zbDryCalibration.onAnalogOutputChange(queueDryCalibrationWrite);
 
-  zbDryInterval.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbDryInterval.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbDryInterval.addAnalogOutput();
   zbDryInterval.setAnalogOutputApplication(EZB_ZCL_AO_TIME_OTHER);
   zbDryInterval.setAnalogOutputDescription("Dry Reporting Interval");
@@ -950,7 +953,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     MIN_SLEEP_INTERVAL_MINUTES, MAX_SLEEP_INTERVAL_MINUTES);
   zbDryInterval.onAnalogOutputChange(queueDryIntervalWrite);
 
-  zbMoistInterval.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbMoistInterval.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbMoistInterval.addAnalogOutput();
   zbMoistInterval.setAnalogOutputApplication(EZB_ZCL_AO_TIME_OTHER);
   zbMoistInterval.setAnalogOutputDescription("Moist Reporting Interval");
@@ -959,7 +962,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     MIN_SLEEP_INTERVAL_MINUTES, MAX_SLEEP_INTERVAL_MINUTES);
   zbMoistInterval.onAnalogOutputChange(queueMoistIntervalWrite);
 
-  zbDryThreshold.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
+  zbDryThreshold.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbDryThreshold.addAnalogOutput();
   zbDryThreshold.setAnalogOutputApplication(EZB_ZCL_AO_PERCENTAGE_OTHER);
   zbDryThreshold.setAnalogOutputDescription("Dry Threshold");
