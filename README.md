@@ -8,6 +8,7 @@ PlatformIO and Arduino-ESP32.
 
 - Soil moisture, calibrated sensor millivolts, and battery reporting through ZHA
 - Factory-calibrated ESP32-C6 ADC millivolt conversion
+- Averaged battery measurement with build-time NiMH or alkaline percentage curves
 - Persistent wet/dry calibration values exposed as ZHA Number entities
 - Persistent dry/moist reporting intervals and dry threshold exposed through ZHA
 - Adaptive deep sleep on battery power and frequent reporting on USB power
@@ -38,8 +39,20 @@ ranges.
 
 ## Build
 
+The default environment targets a rechargeable NiMH AA cell:
+
 ```powershell
 pio run -e seeed_xiao_esp32_c6
 ```
+
+To build for a disposable alkaline AA cell instead:
+
+```powershell
+pio run -e seeed_xiao_esp32_c6_alkaline
+```
+
+Changing chemistry only changes the internal voltage-to-percentage curve. A
+normal upload preserves Zigbee pairing and stored device settings; do not erase
+the device when switching profiles.
 
 OTA firmware updates are not yet implemented.

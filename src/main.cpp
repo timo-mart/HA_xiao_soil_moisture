@@ -15,6 +15,16 @@
 
 #define USE_LED_ON_BATTERY 0 // when 1 LED blink shortly when reporting
 
+#define BATTERY_CHEMISTRY_NIMH 1
+#define BATTERY_CHEMISTRY_ALKALINE 2
+#ifndef BATTERY_CHEMISTRY
+#define BATTERY_CHEMISTRY BATTERY_CHEMISTRY_NIMH
+#endif
+#if BATTERY_CHEMISTRY != BATTERY_CHEMISTRY_NIMH && \
+    BATTERY_CHEMISTRY != BATTERY_CHEMISTRY_ALKALINE
+#error "BATTERY_CHEMISTRY must be NiMH (1) or alkaline (2)"
+#endif
+
 #define MOISTURE_ENDPOINT_NUMBER 1
 #define RAW_MILLIVOLTS_ENDPOINT_NUMBER 2
 #define WET_CALIBRATION_ENDPOINT_NUMBER 3
@@ -60,6 +70,46 @@ static constexpr uint16_t MIN_SLEEP_INTERVAL_MINUTES = 1;
 static constexpr uint16_t MAX_SLEEP_INTERVAL_MINUTES = 7 * 24 * 60;
 static constexpr uint16_t MIN_DRY_THRESHOLD_PERCENT = 0;
 static constexpr uint16_t MAX_DRY_THRESHOLD_PERCENT = 100;
+
+static constexpr uint8_t BATTERY_SAMPLE_COUNT = 8;
+static constexpr uint16_t BATTERY_SAMPLE_DELAY_MS = 2;
+static constexpr uint16_t BATTERY_PRESENT_MIN_MV = 600;
+
+struct BatteryCurvePoint {
+  uint16_t millivolts;
+  uint8_t percentage;
+};
+
+#if BATTERY_CHEMISTRY == BATTERY_CHEMISTRY_NIMH
+static constexpr char BATTERY_CHEMISTRY_NAME[] = "NiMH";
+// Terminal voltage is only an estimate of NiMH state of charge. These points
+// deliberately spread the flat discharge plateau across the useful range and
+// can be refined later from logged field data without changing Zigbee state.
+static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
+  {1350, 100},
+  {1320, 90},
+  {1290, 75},
+  {1270, 60},
+  {1250, 45},
+  {1230, 30},
+  {1200, 15},
+  {1100, 5},
+  {1000, 0},
+};
+#else
+static constexpr char BATTERY_CHEMISTRY_NAME[] = "alkaline";
+static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
+  {1550, 100},
+  {1450, 90},
+  {1375, 75},
+  {1300, 60},
+  {1230, 45},
+  {1160, 30},
+  {1080, 15},
+  {1000, 5},
+  {900, 0},
+};
+#endif
 
 const uint8_t buttonPin = 2;
 const uint8_t pwmPin = 21;
@@ -498,17 +548,49 @@ void processPendingSleepPolicyWrites() {
   syncSleepPolicyOutputs(true);
 }
 
-uint8_t measureBatteryVoltage(){
-  uint8_t voltage = analogRead(batteryPin)/100;
-  return voltage;
+uint8_t batteryPercentageFromMillivolts(uint16_t millivolts) {
+  if (millivolts >= BATTERY_CURVE[0].millivolts) {
+    return BATTERY_CURVE[0].percentage;
+  }
+
+  const size_t pointCount = sizeof(BATTERY_CURVE) / sizeof(BATTERY_CURVE[0]);
+  for (size_t index = 1; index < pointCount; index++) {
+    const BatteryCurvePoint &upper = BATTERY_CURVE[index - 1];
+    const BatteryCurvePoint &lower = BATTERY_CURVE[index];
+    if (millivolts >= lower.millivolts) {
+      const uint32_t voltageAboveLower = millivolts - lower.millivolts;
+      const uint32_t voltageSpan = upper.millivolts - lower.millivolts;
+      const uint32_t percentageSpan = upper.percentage - lower.percentage;
+      return lower.percentage +
+        (voltageAboveLower * percentageSpan + voltageSpan / 2) /
+        voltageSpan;
+    }
+  }
+
+  return BATTERY_CURVE[pointCount - 1].percentage;
 }
-uint8_t measureBatteryPercentage(){
+
+struct BatteryReading {
+  uint16_t millivolts;
   uint8_t percentage;
-  int voltage = analogRead(batteryPin);
-  if( (voltage < 1100) && (voltage > 100) ) percentage = 0;
-  else if(voltage < 1500 && (voltage > 100) ) percentage = (voltage-1100)*100/400;
-  else percentage = 100;
-  return percentage;
+};
+
+BatteryReading measureBattery() {
+  uint32_t millivoltTotal = 0;
+  for (uint8_t sample = 0; sample < BATTERY_SAMPLE_COUNT; sample++) {
+    millivoltTotal += analogReadMilliVolts(batteryPin);
+    if (sample + 1 < BATTERY_SAMPLE_COUNT) {
+      delay(BATTERY_SAMPLE_DELAY_MS);
+    }
+  }
+
+  const uint16_t millivolts = static_cast<uint16_t>(
+    millivoltTotal / BATTERY_SAMPLE_COUNT);
+  const uint8_t percentage = batteryPercentageFromMillivolts(millivolts);
+  log_i(
+    "Battery: chemistry=%s, calibrated=%u mV, calculated=%u%%",
+    BATTERY_CHEMISTRY_NAME, millivolts, percentage);
+  return {millivolts, percentage};
 }
 
 struct MoistureReading {
@@ -641,7 +723,7 @@ void primeZigbeeAttributes() {
   const MoistureReading moisture = measureMoisture();
   updateMoistureAttributes(moisture);
   if (batteryPowered) {
-    zbMoisture.setBatteryPercentage(measureBatteryPercentage());
+    zbMoisture.setBatteryPercentage(measureBattery().percentage);
   }
   syncCalibrationOutputs(false);
   syncSleepPolicyOutputs(false);
@@ -696,11 +778,7 @@ void scheduleNextWake(const MoistureReading &moisture) {
 static void measureAndSleep(void *arg) {
   bool sent = false;
 
-  uint8_t batteryPercentage = measureBatteryPercentage();
-  if (batteryPercentage == 0 && !commissioningSession) {
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-    esp_deep_sleep_start();
-  }
+  const uint8_t batteryPercentage = measureBattery().percentage;
   const MoistureReading moisture = measureMoisture();
   analogWrite(pwmPin, 0);
 
@@ -940,7 +1018,7 @@ void startConfigurationMode() {
   log_i("Configuration mode ready");
 
   const MoistureReading moisture = measureMoisture();
-  const uint8_t batteryPercentage = measureBatteryPercentage();
+  const uint8_t batteryPercentage = measureBattery().percentage;
   updateMoistureAttributes(moisture);
   zbMoisture.setBatteryPercentage(batteryPercentage);
   reportBatteryAndMoisture(moisture);
@@ -955,7 +1033,7 @@ void finishConfigurationMode() {
   // ordinary sleepy-device boot path and sends the same values once more.
   const MoistureReading moisture = measureMoisture();
   updateMoistureAttributes(moisture);
-  zbMoisture.setBatteryPercentage(measureBatteryPercentage());
+  zbMoisture.setBatteryPercentage(measureBattery().percentage);
   reportBatteryAndMoisture(moisture);
   syncCalibrationOutputs(true);
   syncSleepPolicyOutputs(true);
@@ -994,7 +1072,8 @@ void runConfigurationMode() {
 /********************* Arduino functions **************************/
 void setup() {
   initializeHardware();
-  batteryPowered = measureBatteryVoltage() > 1;
+  const BatteryReading startupBattery = measureBattery();
+  batteryPowered = startupBattery.millivolts >= BATTERY_PRESENT_MIN_MV;
   BootAction bootAction = determineBootAction();
   const bool recoveringConfigRequest =
     bootAction == BootAction::Normal &&
