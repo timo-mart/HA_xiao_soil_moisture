@@ -33,8 +33,8 @@ static constexpr char CONFIG_NAMESPACE[] = "soil_monitor";
 static constexpr char CALIBRATION_KEY[] = "calibration";
 
 static constexpr uint16_t CALIBRATION_VERSION = 1;
-static constexpr uint16_t DEFAULT_WET_MV = 1600;
-static constexpr uint16_t DEFAULT_DRY_MV = 2550;
+static constexpr uint16_t DEFAULT_WET_MV = 1200;
+static constexpr uint16_t DEFAULT_DRY_MV = 2750;
 static constexpr uint16_t MIN_CALIBRATION_MV = 100;
 static constexpr uint16_t MAX_CALIBRATION_MV = 3300;
 static constexpr uint16_t MIN_CALIBRATION_SPAN_MV = 100;
@@ -175,17 +175,36 @@ uint8_t measureBatteryPercentage(){
   return percentage;
 }
 
-uint8_t measureMoisturePercentage() {
+struct MoistureReading {
+  bool valid;
+  uint16_t millivolts;
+  uint8_t percentage;
+};
+
+MoistureReading measureMoisture() {
   uint32_t millivoltTotal = 0;
+  uint8_t validSamples = 0;
   for (uint8_t sample = 0; sample < 5; sample++) {
-    millivoltTotal += analogReadMilliVolts(sensorPin);
+    const uint32_t millivolts = analogReadMilliVolts(sensorPin);
+    if (millivolts > 0 && millivolts <= MAX_CALIBRATION_MV) {
+      millivoltTotal += millivolts;
+      validSamples++;
+    }
   }
 
-  const int32_t millivolts = millivoltTotal / 5;
+  if (validSamples == 0) {
+    return {false, 0, 0};
+  }
+
+  const uint16_t millivolts = millivoltTotal / validSamples;
   const int32_t span = activeCalibration.dryMv - activeCalibration.wetMv;
   const int32_t moisture =
     (activeCalibration.dryMv - millivolts) * 100 / span;
-  return constrain(moisture, 0, 100);
+  return {
+    true,
+    millivolts,
+    static_cast<uint8_t>(constrain(moisture, 0, 100)),
+  };
 }
 
 /************************ function called when on battery *****************************/
@@ -199,20 +218,23 @@ static void measureAndSleep(void *arg) {
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     esp_deep_sleep_start();
   }
-  uint8_t moisture = measureMoisturePercentage();
+  const MoistureReading moisture = measureMoisture();
   analogWrite(pwmPin, 0);
 
-  zbMoisture.setAnalogInput(moisture);
+  if (moisture.valid) {
+    zbMoisture.setAnalogInput(moisture.percentage);
+  }
 
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningBoot) {
     zbMoisture.reportBatteryPercentage();
-    sent = zbMoisture.reportAnalogInput();  // report moisture as percentage value
+    sent = !moisture.valid || zbMoisture.reportAnalogInput();
   }
 
 #if USE_LED_ON_BATTERY
-  if(moisture > 50) digitalWrite(ledGreenPin, 1);
-  else if(moisture > 40) digitalWrite(ledYellowPin, 1);
+  if(!moisture.valid) digitalWrite(ledRedPin, 1);
+  else if(moisture.percentage > 50) digitalWrite(ledGreenPin, 1);
+  else if(moisture.percentage > 40) digitalWrite(ledYellowPin, 1);
   else digitalWrite(ledRedPin, 1);
 #endif
 
@@ -224,7 +246,9 @@ static void measureAndSleep(void *arg) {
       // Regular reports keep a sleepy device exchanging traffic with its
       // parent while ZHA binds clusters and configures attribute reporting.
       zbMoisture.reportBatteryPercentage();
-      zbMoisture.reportAnalogInput();
+      if (moisture.valid) {
+        zbMoisture.reportAnalogInput();
+      }
 
       int32_t remaining = reportDeadline - millis();
       if (remaining <= 0) {
@@ -243,7 +267,9 @@ static void measureAndSleep(void *arg) {
   if (commissioningBoot) {
     // Publish the final values after ZHA has had the full interview window.
     zbMoisture.reportBatteryPercentage();
-    zbMoisture.reportAnalogInput();
+    if (moisture.valid) {
+      zbMoisture.reportAnalogInput();
+    }
   }
   vTaskDelay(500 / portTICK_PERIOD_MS); // wait for a while to let the data be sent before going to sleep, otherwise the device may go to sleep before sending the data and the data will be lost
 
@@ -254,7 +280,7 @@ static void measureAndSleep(void *arg) {
 #endif
   
   // Put device to deep sleep based on moisture level, if the moisture is below the threshold, the device will sleep for shorter time to report more frequently, otherwise it will sleep for longer time to save battery
-  if(moisture < TIME_TO_SLEEP_TRESHOLD) esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_SHORT * uS_TO_S_FACTOR);
+  if(!moisture.valid || moisture.percentage < TIME_TO_SLEEP_TRESHOLD) esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_SHORT * uS_TO_S_FACTOR);
   else esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_LONG * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
 }
@@ -262,20 +288,22 @@ static void measureAndSleep(void *arg) {
 /************************ function called when plugged in *****************************/
 static void measure(void *arg) {
   while(true){
-    uint8_t moisture = measureMoisturePercentage();
+    const MoistureReading moisture = measureMoisture();
 
-    zbMoisture.setAnalogInput(moisture);
-    
     // indicate moisture level by LED when plugged in (all the time on, not only when reporting)
     digitalWrite(ledRedPin, 0);
     digitalWrite(ledGreenPin, 0);
     digitalWrite(ledYellowPin, 0);
 
-    if(moisture > 50) digitalWrite(ledGreenPin, 1);
-    else if(moisture > 40) digitalWrite(ledYellowPin, 1);
-    else digitalWrite(ledRedPin, 1); 
+    if (moisture.valid) {
+      zbMoisture.setAnalogInput(moisture.percentage);
 
-    zbMoisture.reportAnalogInput();
+      if(moisture.percentage > 50) digitalWrite(ledGreenPin, 1);
+      else if(moisture.percentage > 40) digitalWrite(ledYellowPin, 1);
+      else digitalWrite(ledRedPin, 1);
+
+      zbMoisture.reportAnalogInput();
+    }
 
     vTaskDelay(5000 / portTICK_PERIOD_MS); // wait for 5s before measuring again, the reporting interval is not critical when the device is plugged in, so we can afford to report more frequently to get more accurate data
   }
@@ -290,6 +318,12 @@ void setup() {
   analogWriteFrequency(pwmPin, 200000);
   analogWriteResolution(pwmPin, 2);
   analogWrite(pwmPin, 2);
+
+  // Use the ESP32-C6's factory-calibrated full-range ADC conversion for both
+  // analog channels. Arduino calls this attenuation ADC_11db; ESP-IDF names
+  // the same setting ADC_ATTEN_DB_12.
+  analogSetPinAttenuation(sensorPin, ADC_11db);
+  analogSetPinAttenuation(batteryPin, ADC_11db);
 
   loadCalibration();
 
