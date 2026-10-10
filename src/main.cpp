@@ -93,10 +93,6 @@ uint8_t measureBatteryPercentage(){
   if( (voltage < 1100) && (voltage > 100) ) percentage = 0;
   else if(voltage < 1500 && (voltage > 100) ) percentage = (voltage-1100)*100/400;
   else percentage = 100;
-  if(percentage == 0){
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-    esp_deep_sleep_start();
-  }
   return percentage;
 }
 
@@ -121,6 +117,10 @@ static void measureAndSleep(void *arg) {
   bool commissioningBoot = esp_sleep_get_wakeup_causes() == 0;
 
   uint8_t batteryPercentage = measureBatteryPercentage();
+  if (batteryPercentage == 0 && !commissioningBoot) {
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    esp_deep_sleep_start();
+  }
   int wetVoltage = WET_VOLTAGE - BATTERY_FACTOR * (100 - batteryPercentage);
   uint8_t moisture = measureMoisturePercentage(wetVoltage);
   analogWrite(pwmPin, 0);
