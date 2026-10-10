@@ -207,6 +207,71 @@ MoistureReading measureMoisture() {
   };
 }
 
+void clearMoistureLeds() {
+  digitalWrite(ledRedPin, 0);
+  digitalWrite(ledGreenPin, 0);
+  digitalWrite(ledYellowPin, 0);
+}
+
+void indicateMoisture(const MoistureReading &moisture) {
+  if (!moisture.valid || moisture.percentage <= 40) {
+    digitalWrite(ledRedPin, 1);
+  } else if (moisture.percentage <= 50) {
+    digitalWrite(ledYellowPin, 1);
+  } else {
+    digitalWrite(ledGreenPin, 1);
+  }
+}
+
+bool reportMoisture(const MoistureReading &moisture) {
+  return !moisture.valid || zbMoisture.reportAnalogInput();
+}
+
+void reportBatteryAndMoisture(const MoistureReading &moisture) {
+  zbMoisture.reportBatteryPercentage();
+  if (moisture.valid) {
+    zbMoisture.reportAnalogInput();
+  }
+}
+
+void runCommissioningReportWindow(
+    const MoistureReading &moisture, uint32_t reportDeadline) {
+  vTaskDelay(COMMISSIONING_INTERVIEW_GRACE / portTICK_PERIOD_MS);
+
+  while ((int32_t)(reportDeadline - millis()) > 0) {
+    // Regular reports keep a sleepy device exchanging traffic with its
+    // parent while ZHA binds clusters and configures attribute reporting.
+    reportBatteryAndMoisture(moisture);
+
+    const int32_t remaining = reportDeadline - millis();
+    if (remaining <= 0) {
+      break;
+    }
+    const uint32_t delayMs = min(
+      (uint32_t)remaining, (uint32_t)COMMISSIONING_REPORT_INTERVAL);
+    vTaskDelay(delayMs / portTICK_PERIOD_MS);
+  }
+
+  // Publish the final values after ZHA has had the full interview window.
+  reportBatteryAndMoisture(moisture);
+}
+
+void retryMoistureReport(
+    const MoistureReading &moisture, uint32_t reportDeadline, bool sent) {
+  while (!sent && (int32_t)(reportDeadline - millis()) > 0) {
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    sent = reportMoisture(moisture);
+  }
+}
+
+void scheduleNextWake(const MoistureReading &moisture) {
+  const uint32_t sleepSeconds =
+    !moisture.valid || moisture.percentage < TIME_TO_SLEEP_TRESHOLD
+      ? TIME_TO_SLEEP_SHORT
+      : TIME_TO_SLEEP_LONG;
+  esp_sleep_enable_timer_wakeup(sleepSeconds * uS_TO_S_FACTOR);
+}
+
 /************************ function called when on battery *****************************/
 static void measureAndSleep(void *arg) {
   bool sent = false;
@@ -228,60 +293,27 @@ static void measureAndSleep(void *arg) {
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningBoot) {
     zbMoisture.reportBatteryPercentage();
-    sent = !moisture.valid || zbMoisture.reportAnalogInput();
+    sent = reportMoisture(moisture);
   }
 
 #if USE_LED_ON_BATTERY
-  if(!moisture.valid) digitalWrite(ledRedPin, 1);
-  else if(moisture.percentage > 50) digitalWrite(ledGreenPin, 1);
-  else if(moisture.percentage > 40) digitalWrite(ledYellowPin, 1);
-  else digitalWrite(ledRedPin, 1);
+  indicateMoisture(moisture);
 #endif
 
   uint32_t reportDeadline = millis() + (commissioningBoot ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
   if (commissioningBoot) {
-    vTaskDelay(COMMISSIONING_INTERVIEW_GRACE / portTICK_PERIOD_MS);
-
-    while ((int32_t)(reportDeadline - millis()) > 0) {
-      // Regular reports keep a sleepy device exchanging traffic with its
-      // parent while ZHA binds clusters and configures attribute reporting.
-      zbMoisture.reportBatteryPercentage();
-      if (moisture.valid) {
-        zbMoisture.reportAnalogInput();
-      }
-
-      int32_t remaining = reportDeadline - millis();
-      if (remaining <= 0) {
-        break;
-      }
-      uint32_t delayMs = min((uint32_t)remaining, (uint32_t)COMMISSIONING_REPORT_INTERVAL);
-      vTaskDelay(delayMs / portTICK_PERIOD_MS);
-    }
+    runCommissioningReportWindow(moisture, reportDeadline);
   } else {
-    while (!sent && (int32_t)(reportDeadline - millis()) > 0) {
-      vTaskDelay(500 / portTICK_PERIOD_MS);
-      sent = zbMoisture.reportAnalogInput();
-    }
-  }
-
-  if (commissioningBoot) {
-    // Publish the final values after ZHA has had the full interview window.
-    zbMoisture.reportBatteryPercentage();
-    if (moisture.valid) {
-      zbMoisture.reportAnalogInput();
-    }
+    retryMoistureReport(moisture, reportDeadline, sent);
   }
   vTaskDelay(500 / portTICK_PERIOD_MS); // wait for a while to let the data be sent before going to sleep, otherwise the device may go to sleep before sending the data and the data will be lost
 
 #if USE_LED_ON_BATTERY
-  digitalWrite(ledRedPin, 0);
-  digitalWrite(ledGreenPin, 0);
-  digitalWrite(ledYellowPin, 0);
+  clearMoistureLeds();
 #endif
   
   // Put device to deep sleep based on moisture level, if the moisture is below the threshold, the device will sleep for shorter time to report more frequently, otherwise it will sleep for longer time to save battery
-  if(!moisture.valid || moisture.percentage < TIME_TO_SLEEP_TRESHOLD) esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_SHORT * uS_TO_S_FACTOR);
-  else esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP_LONG * uS_TO_S_FACTOR);
+  scheduleNextWake(moisture);
   esp_deep_sleep_start();
 }
 
@@ -291,17 +323,11 @@ static void measure(void *arg) {
     const MoistureReading moisture = measureMoisture();
 
     // indicate moisture level by LED when plugged in (all the time on, not only when reporting)
-    digitalWrite(ledRedPin, 0);
-    digitalWrite(ledGreenPin, 0);
-    digitalWrite(ledYellowPin, 0);
+    clearMoistureLeds();
 
     if (moisture.valid) {
       zbMoisture.setAnalogInput(moisture.percentage);
-
-      if(moisture.percentage > 50) digitalWrite(ledGreenPin, 1);
-      else if(moisture.percentage > 40) digitalWrite(ledYellowPin, 1);
-      else digitalWrite(ledRedPin, 1);
-
+      indicateMoisture(moisture);
       zbMoisture.reportAnalogInput();
     }
 
@@ -309,8 +335,7 @@ static void measure(void *arg) {
   }
 }
 
-/********************* Arduino functions **************************/
-void setup() {
+void initializeHardware() {
   pinMode(ledRedPin, OUTPUT);
   pinMode(ledGreenPin, OUTPUT);
   pinMode(ledYellowPin, OUTPUT);
@@ -326,10 +351,19 @@ void setup() {
   analogSetPinAttenuation(batteryPin, ADC_11db);
 
   loadCalibration();
-
-  // Init button switch
   pinMode(buttonPin, INPUT);
+}
 
+void indicateZigbeeStartFailure() {
+  for (uint8_t blink = 0; blink < 3; blink++) {
+    digitalWrite(ledRedPin, 1);
+    delay(500);
+    digitalWrite(ledRedPin, 0);
+    delay(500);
+  }
+}
+
+void initializeZigbee() {
   // Arduino-ESP32 4 selects and initializes the Zigbee role before endpoint
   // configuration. Use its default 3-second end-device keep-alive so a sleepy
   // device polls its parent promptly during commissioning.
@@ -339,7 +373,6 @@ void setup() {
   }
   Zigbee.setRxOnWhenIdle(false);
 
-  // Optional: set Zigbee device name and model + add cluster for moisture sensor
   zbMoisture.setManufacturerAndModel("Seed Studio", "Xiao Soil Moisture Sensor");
   zbMoisture.addAnalogInput();
   zbMoisture.setAnalogInputApplication(EZB_ZCL_AI_PERCENTAGE_OTHER);
@@ -352,44 +385,35 @@ void setup() {
     ESP.restart();
   }
 
-  // Add endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbMoisture);
+  Zigbee.setTimeout(10000);
 
-  // For battery powered devices, it can be better to set timeout for Zigbee Begin to lower value to save battery
-  // If the timeout has been reached, the network channel mask will be reset and the device will try to connect again after reset (scanning all channels)
-  Zigbee.setTimeout(10000);  // Set timeout for Zigbee Begin to 10s (default is 30s)
-
-  // When all EPs are registered, start Zigbee in End Device mode
   if (!Zigbee.begin()) {
-    digitalWrite(ledRedPin, 1);
-    delay(500);
-    digitalWrite(ledRedPin, 0);
-    delay(500);
-    digitalWrite(ledRedPin, 1);
-    delay(500);
-    digitalWrite(ledRedPin, 0);
-    delay(500);
-    digitalWrite(ledRedPin, 1);
-    delay(500);
-    digitalWrite(ledRedPin, 0);
-    ESP.restart();  // If Zigbee failed to start, reboot the device and try again after couple blinks of red LED to indicate the error
+    indicateZigbeeStartFailure();
+    ESP.restart();
   }
   while (!Zigbee.connected()) {
     delay(100);
   }
+}
 
-  // setup wakeup button for battery powered device and start measurement task according to power source
-  if(measureBatteryVoltage() > 1){
-    esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
-    // Configure pullup/downs via RTCIO to tie wakeup pins to inactive level during deepsleep.
-    // EXT0 resides in the same power domain (RTC_PERIPH) as the RTC IO pullup/downs.
-    // No need to keep that power domain explicitly, unlike EXT1.
+void startMeasurementTask() {
+  if (measureBatteryVoltage() > 1) {
+    esp_sleep_enable_ext1_wakeup_io(
+      BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
     gpio_pullup_dis(WAKEUP_GPIO);
     gpio_pulldown_dis(WAKEUP_GPIO);
-
     xTaskCreate(measureAndSleep, "sensor_update", 2048, NULL, 10, NULL);
+  } else {
+    xTaskCreate(measure, "sensor_update", 2048, NULL, 10, NULL);
   }
-  else xTaskCreate(measure, "sensor_update", 2048, NULL, 10, NULL);
+}
+
+/********************* Arduino functions **************************/
+void setup() {
+  initializeHardware();
+  initializeZigbee();
+  startMeasurementTask();
 }
 
 void loop() {
