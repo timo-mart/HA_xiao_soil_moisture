@@ -38,7 +38,9 @@
 #define WAKEUP_GPIO              GPIO_NUM_2 
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define REPORT_RETRY_TIMEOUT_MS 1000 /* Retry immediate report-submission failures */
+#define REPORT_ACK_TIMEOUT_MS 6000 /* Bound coordinator-confirmed report retries */
+#define REPORT_ACK_RETRY_INTERVAL_MS 1500 /* Retry only reports ZHA has not confirmed */
+#define REPORT_ACK_POLL_INTERVAL_MS 25 /* Yield while waiting for Default Responses */
 #define REPORT_INTER_MESSAGE_DELAY_MS 100 /* Let the stack start each queued report */
 #define REPORT_FLUSH_GRACE_MS 1000 /* Keep the radio awake while queued reports transmit */
 #define COMMISSIONING_TIMEOUT 60000 /* Keep a cold-booted device reachable while ZHA interviews it */
@@ -212,6 +214,36 @@ ZigbeeAnalog zbDryCalibration = ZigbeeAnalog(DRY_CALIBRATION_ENDPOINT_NUMBER);
 ZigbeeAnalog zbDryInterval = ZigbeeAnalog(DRY_INTERVAL_ENDPOINT_NUMBER);
 ZigbeeAnalog zbMoistInterval = ZigbeeAnalog(MOIST_INTERVAL_ENDPOINT_NUMBER);
 ZigbeeAnalog zbDryThreshold = ZigbeeAnalog(DRY_THRESHOLD_ENDPOINT_NUMBER);
+
+struct ReportAcknowledgements {
+  volatile bool battery = false;
+  volatile bool moisture = false;
+  volatile bool rawMillivolts = false;
+};
+
+ReportAcknowledgements reportAcknowledgements;
+volatile bool collectingReportAcknowledgements = false;
+
+void handleDefaultResponse(
+    zb_cmd_type_t responseToCommand, ezb_zcl_status_t status,
+    uint8_t endpoint, uint16_t cluster) {
+  if (!collectingReportAcknowledgements ||
+      responseToCommand != ZB_CMD_REPORT_ATTRIBUTE ||
+      status != EZB_ZCL_STATUS_SUCCESS) {
+    return;
+  }
+
+  if (endpoint == MOISTURE_ENDPOINT_NUMBER &&
+      cluster == EZB_ZCL_CLUSTER_ID_POWER_CONFIG) {
+    reportAcknowledgements.battery = true;
+  } else if (endpoint == MOISTURE_ENDPOINT_NUMBER &&
+             cluster == EZB_ZCL_CLUSTER_ID_ANALOG_INPUT) {
+    reportAcknowledgements.moisture = true;
+  } else if (endpoint == RAW_MILLIVOLTS_ENDPOINT_NUMBER &&
+             cluster == EZB_ZCL_CLUSTER_ID_ANALOG_INPUT) {
+    reportAcknowledgements.rawMillivolts = true;
+  }
+}
 
 enum class BootAction {
   Normal,
@@ -793,24 +825,54 @@ void runCommissioningReportWindow(
   reportBatteryAndMoisture(moisture);
 }
 
-void retryMeasurementReports(
-    const MoistureReading &moisture, uint32_t reportDeadline,
-    bool moistureSent, bool rawMillivoltsSent) {
-  while ((!moistureSent || !rawMillivoltsSent) &&
-         (int32_t)(reportDeadline - millis()) > 0) {
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    if (!moistureSent) {
-      moistureSent = reportMoisture(moisture);
-    }
-    if (!rawMillivoltsSent) {
-      rawMillivoltsSent = reportRawMillivolts(moisture);
-    }
+bool allReportsAcknowledged() {
+  return reportAcknowledgements.battery &&
+         reportAcknowledgements.moisture &&
+         reportAcknowledgements.rawMillivolts;
+}
+
+void submitUnacknowledgedReports(const MoistureReading &moisture) {
+  if (!reportAcknowledgements.battery) {
+    zbMoisture.reportBatteryPercentage();
   }
-  if (!moistureSent || !rawMillivoltsSent) {
+  vTaskDelay(REPORT_INTER_MESSAGE_DELAY_MS / portTICK_PERIOD_MS);
+
+  if (!reportAcknowledgements.moisture) {
+    reportMoisture(moisture);
+  }
+  vTaskDelay(REPORT_INTER_MESSAGE_DELAY_MS / portTICK_PERIOD_MS);
+
+  if (!reportAcknowledgements.rawMillivolts) {
+    reportRawMillivolts(moisture);
+  }
+}
+
+void reportMeasurementsWithAcknowledgements(const MoistureReading &moisture) {
+  reportAcknowledgements.battery = false;
+  reportAcknowledgements.moisture = !moisture.valid;
+  reportAcknowledgements.rawMillivolts = !moisture.valid;
+  collectingReportAcknowledgements = true;
+
+  const uint32_t reportDeadline = millis() + REPORT_ACK_TIMEOUT_MS;
+  uint32_t nextAttempt = millis();
+  while (!allReportsAcknowledged() && !deadlineReached(reportDeadline)) {
+    if (deadlineReached(nextAttempt)) {
+      submitUnacknowledgedReports(moisture);
+      nextAttempt = millis() + REPORT_ACK_RETRY_INTERVAL_MS;
+    }
+    vTaskDelay(REPORT_ACK_POLL_INTERVAL_MS / portTICK_PERIOD_MS);
+  }
+
+  collectingReportAcknowledgements = false;
+  if (allReportsAcknowledged()) {
+    log_i("All measurement reports acknowledged");
+  } else {
     log_w(
-      "Measurement report timeout: moisture=%s, raw_millivolts=%s",
-      moistureSent ? "sent" : "failed",
-      rawMillivoltsSent ? "sent" : "failed");
+      "Report acknowledgement timeout: battery=%s, moisture=%s, "
+      "raw_millivolts=%s",
+      reportAcknowledgements.battery ? "confirmed" : "missing",
+      reportAcknowledgements.moisture ? "confirmed" : "missing",
+      reportAcknowledgements.rawMillivolts ? "confirmed" : "missing");
   }
 }
 
@@ -831,9 +893,6 @@ void scheduleNextWake(const MoistureReading &moisture) {
 
 /************************ function called when on battery *****************************/
 static void measureAndSleep(void *arg) {
-  bool moistureSent = false;
-  bool rawMillivoltsSent = false;
-
   const uint8_t batteryPercentage = measureBattery().percentage;
   const MoistureReading moisture = measureMoisture();
   analogWrite(pwmPin, 0);
@@ -842,24 +901,16 @@ static void measureAndSleep(void *arg) {
 
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningSession) {
-    zbMoisture.reportBatteryPercentage();
-    vTaskDelay(REPORT_INTER_MESSAGE_DELAY_MS / portTICK_PERIOD_MS);
-    moistureSent = reportMoisture(moisture);
-    vTaskDelay(REPORT_INTER_MESSAGE_DELAY_MS / portTICK_PERIOD_MS);
-    rawMillivoltsSent = reportRawMillivolts(moisture);
+    reportMeasurementsWithAcknowledgements(moisture);
   }
 
 #if USE_LED_ON_BATTERY
   indicateMoisture(moisture);
 #endif
 
-  uint32_t reportDeadline = millis() +
-    (commissioningSession ? COMMISSIONING_TIMEOUT : REPORT_RETRY_TIMEOUT_MS);
   if (commissioningSession) {
+    const uint32_t reportDeadline = millis() + COMMISSIONING_TIMEOUT;
     runCommissioningReportWindow(moisture, reportDeadline);
-  } else {
-    retryMeasurementReports(
-      moisture, reportDeadline, moistureSent, rawMillivoltsSent);
   }
   // Reporting is asynchronous: successful API submission does not mean that
   // the frame has already left the radio. Give the stack time to drain all
@@ -933,6 +984,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     return false;
   }
   Zigbee.setRxOnWhenIdle(receiverOnWhenIdle);
+  Zigbee.onGlobalDefaultResponse(handleDefaultResponse);
 
   zbMoisture.setManufacturerAndModel(DEVICE_MANUFACTURER, DEVICE_MODEL);
   zbMoisture.addAnalogInput();
