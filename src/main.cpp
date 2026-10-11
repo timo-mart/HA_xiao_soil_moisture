@@ -791,11 +791,24 @@ void runCommissioningReportWindow(
   reportBatteryAndMoisture(moisture);
 }
 
-void retryMoistureReport(
-    const MoistureReading &moisture, uint32_t reportDeadline, bool sent) {
-  while (!sent && (int32_t)(reportDeadline - millis()) > 0) {
+void retryMeasurementReports(
+    const MoistureReading &moisture, uint32_t reportDeadline,
+    bool moistureSent, bool rawMillivoltsSent) {
+  while ((!moistureSent || !rawMillivoltsSent) &&
+         (int32_t)(reportDeadline - millis()) > 0) {
     vTaskDelay(500 / portTICK_PERIOD_MS);
-    sent = reportMoisture(moisture);
+    if (!moistureSent) {
+      moistureSent = reportMoisture(moisture);
+    }
+    if (!rawMillivoltsSent) {
+      rawMillivoltsSent = reportRawMillivolts(moisture);
+    }
+  }
+  if (!moistureSent || !rawMillivoltsSent) {
+    log_w(
+      "Measurement report timeout: moisture=%s, raw_millivolts=%s",
+      moistureSent ? "sent" : "failed",
+      rawMillivoltsSent ? "sent" : "failed");
   }
 }
 
@@ -816,7 +829,8 @@ void scheduleNextWake(const MoistureReading &moisture) {
 
 /************************ function called when on battery *****************************/
 static void measureAndSleep(void *arg) {
-  bool sent = false;
+  bool moistureSent = false;
+  bool rawMillivoltsSent = false;
 
   const uint8_t batteryPercentage = measureBattery().percentage;
   const MoistureReading moisture = measureMoisture();
@@ -827,8 +841,8 @@ static void measureAndSleep(void *arg) {
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningSession) {
     zbMoisture.reportBatteryPercentage();
-    sent = reportMoisture(moisture);
-    reportRawMillivolts(moisture);
+    moistureSent = reportMoisture(moisture);
+    rawMillivoltsSent = reportRawMillivolts(moisture);
   }
 
 #if USE_LED_ON_BATTERY
@@ -840,7 +854,8 @@ static void measureAndSleep(void *arg) {
   if (commissioningSession) {
     runCommissioningReportWindow(moisture, reportDeadline);
   } else {
-    retryMoistureReport(moisture, reportDeadline, sent);
+    retryMeasurementReports(
+      moisture, reportDeadline, moistureSent, rawMillivoltsSent);
   }
   vTaskDelay(500 / portTICK_PERIOD_MS); // wait for a while to let the data be sent before going to sleep, otherwise the device may go to sleep before sending the data and the data will be lost
 
