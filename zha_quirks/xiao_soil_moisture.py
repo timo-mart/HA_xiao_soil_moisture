@@ -126,40 +126,54 @@ class DryThresholdAnalogOutput(CustomCluster, AnalogOutput):
     .change_entity_metadata(
         endpoint_id=1,
         cluster_id=AnalogInput.cluster_id,
+        new_translation_key="soil_moisture",
+        new_fallback_name="Soil moisture",
         new_device_class=SensorDeviceClass.MOISTURE,
     )
     .change_entity_metadata(
         endpoint_id=2,
         cluster_id=AnalogInput.cluster_id,
+        new_translation_key="soil_sensor_voltage",
+        new_fallback_name="Soil sensor voltage",
         new_device_class=SensorDeviceClass.VOLTAGE,
     )
     .change_entity_metadata(
         endpoint_id=3,
         cluster_id=AnalogOutput.cluster_id,
+        new_translation_key="wet_calibration",
+        new_fallback_name="Wet calibration",
         new_device_class=NumberDeviceClass.VOLTAGE,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=4,
         cluster_id=AnalogOutput.cluster_id,
+        new_translation_key="dry_calibration",
+        new_fallback_name="Dry calibration",
         new_device_class=NumberDeviceClass.VOLTAGE,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=5,
         cluster_id=AnalogOutput.cluster_id,
+        new_translation_key="dry_reporting_interval",
+        new_fallback_name="Dry reporting interval",
         new_device_class=NumberDeviceClass.DURATION,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=6,
         cluster_id=AnalogOutput.cluster_id,
+        new_translation_key="moist_reporting_interval",
+        new_fallback_name="Moist reporting interval",
         new_device_class=NumberDeviceClass.DURATION,
         new_entity_category=EntityType.CONFIG,
     )
     .change_entity_metadata(
         endpoint_id=7,
         cluster_id=AnalogOutput.cluster_id,
+        new_translation_key="dry_threshold",
+        new_fallback_name="Dry threshold",
         new_device_class=NumberDeviceClass.MOISTURE,
         new_entity_category=EntityType.CONFIG,
     )

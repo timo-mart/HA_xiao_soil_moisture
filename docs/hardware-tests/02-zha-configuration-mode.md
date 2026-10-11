@@ -34,6 +34,8 @@ interval is selected. The dry interval may not exceed the moist interval.
 6. Confirm the entity metadata uses the moisture device class for soil
    moisture and dry threshold, voltage for raw voltage and both calibration
    Numbers, duration for both reporting intervals, and battery for battery.
+   Confirm the entities retain their distinct names rather than appearing as
+   generic Moisture, Voltage, or Duration entities.
 7. Confirm the initial calibration values are 1200 mV wet and 2750 mV dry.
 8. Confirm the initial sleep policy is 15 minutes dry, 15 minutes moist, and a
    45% threshold.
