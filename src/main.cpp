@@ -38,7 +38,9 @@
 #define WAKEUP_GPIO              GPIO_NUM_2 
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define REPORT_TIMEOUT 1000       /* Timeout for response from coordinator in ms */
+#define REPORT_RETRY_TIMEOUT_MS 1000 /* Retry immediate report-submission failures */
+#define REPORT_INTER_MESSAGE_DELAY_MS 100 /* Let the stack start each queued report */
+#define REPORT_FLUSH_GRACE_MS 1000 /* Keep the radio awake while queued reports transmit */
 #define COMMISSIONING_TIMEOUT 60000 /* Keep a cold-booted device reachable while ZHA interviews it */
 #define COMMISSIONING_INTERVIEW_GRACE 10000 /* Let ZHA read descriptors and Basic attributes first */
 #define COMMISSIONING_REPORT_INTERVAL 5000 /* Keep Zigbee traffic flowing while ZHA configures the device */
@@ -841,7 +843,9 @@ static void measureAndSleep(void *arg) {
   zbMoisture.setBatteryPercentage(batteryPercentage);
   if (!commissioningSession) {
     zbMoisture.reportBatteryPercentage();
+    vTaskDelay(REPORT_INTER_MESSAGE_DELAY_MS / portTICK_PERIOD_MS);
     moistureSent = reportMoisture(moisture);
+    vTaskDelay(REPORT_INTER_MESSAGE_DELAY_MS / portTICK_PERIOD_MS);
     rawMillivoltsSent = reportRawMillivolts(moisture);
   }
 
@@ -850,14 +854,17 @@ static void measureAndSleep(void *arg) {
 #endif
 
   uint32_t reportDeadline = millis() +
-    (commissioningSession ? COMMISSIONING_TIMEOUT : REPORT_TIMEOUT);
+    (commissioningSession ? COMMISSIONING_TIMEOUT : REPORT_RETRY_TIMEOUT_MS);
   if (commissioningSession) {
     runCommissioningReportWindow(moisture, reportDeadline);
   } else {
     retryMeasurementReports(
       moisture, reportDeadline, moistureSent, rawMillivoltsSent);
   }
-  vTaskDelay(500 / portTICK_PERIOD_MS); // wait for a while to let the data be sent before going to sleep, otherwise the device may go to sleep before sending the data and the data will be lost
+  // Reporting is asynchronous: successful API submission does not mean that
+  // the frame has already left the radio. Give the stack time to drain all
+  // queued reports before deep sleep powers the radio down.
+  vTaskDelay(REPORT_FLUSH_GRACE_MS / portTICK_PERIOD_MS);
 
 #if USE_LED_ON_BATTERY
   clearMoistureLeds();
