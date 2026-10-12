@@ -13,6 +13,7 @@ PlatformIO and Arduino-ESP32.
 - Persistent wet/dry calibration values exposed as ZHA Configuration Numbers
 - Persistent dry/moist reporting intervals and dry threshold in ZHA Configuration
 - Adaptive deep sleep on battery power and frequent reporting on USB power
+- Automatic Zigbee reconnect retries with battery-conscious backoff
 - Short-press configuration mode for immediate reports and setting writes
 - Ten-second button hold for Zigbee factory reset
 - Immediate LED feedback before Zigbee reconnects
@@ -55,7 +56,7 @@ pio run -e seeed_xiao_esp32_c6_alkaline
 Changing chemistry only changes the internal voltage-to-percentage curve. A
 normal upload preserves Zigbee pairing and stored device settings; do not erase
 the device when switching profiles. ZHA can identify the installed profile from
-the standard software build ID (`dev2.08-nimh` or `dev2.08-alkaline`). The
+the standard software build ID (`dev2.09-nimh` or `dev2.09-alkaline`). The
 custom quirk displays that value as a diagnostic Firmware version sensor without
 periodic reporting. The existing battery entity also advertises one AA cell
 through standard read-only Power Configuration attributes.

@@ -52,6 +52,9 @@ static constexpr uint32_t CONFIG_MAXIMUM_DURATION_MS = 120000;
 static constexpr uint32_t CONFIG_SAMPLE_INTERVAL_MS = 5000;
 static constexpr uint32_t ZIGBEE_CONNECTION_TIMEOUT_MS = 30000;
 static constexpr uint8_t CONFIG_RECOVERY_RESTARTS = 1;
+static constexpr uint16_t ZIGBEE_RECONNECT_RETRY_MINUTES[] = {
+  5, 15, 60, 360,
+};
 static constexpr uint32_t FACTORY_RESET_HOLD_MS = 10000;
 static constexpr uint32_t FACTORY_RESET_LED_MS = 2000;
 static constexpr uint32_t FACTORY_RESET_LED_OFF_MS = 250;
@@ -89,7 +92,7 @@ struct BatteryCurvePoint {
 
 #if BATTERY_CHEMISTRY == BATTERY_CHEMISTRY_NIMH
 static constexpr char BATTERY_CHEMISTRY_NAME[] = "NiMH";
-static constexpr char FIRMWARE_BUILD_ID[] = "dev2.08-nimh";
+static constexpr char FIRMWARE_BUILD_ID[] = "dev2.09-nimh";
 // Terminal voltage is only an estimate of NiMH state of charge. These points
 // deliberately spread the flat discharge plateau across the useful range and
 // can be refined later from logged field data without changing Zigbee state.
@@ -106,7 +109,7 @@ static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
 };
 #else
 static constexpr char BATTERY_CHEMISTRY_NAME[] = "alkaline";
-static constexpr char FIRMWARE_BUILD_ID[] = "dev2.08-alkaline";
+static constexpr char FIRMWARE_BUILD_ID[] = "dev2.09-alkaline";
 static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
   {1550, 100},
   {1450, 90},
@@ -256,6 +259,11 @@ RTC_NOINIT_ATTR volatile uint32_t retainedConfigMagic;
 RTC_NOINIT_ATTR volatile uint32_t retainedConfigMagicInverse;
 RTC_NOINIT_ATTR volatile uint32_t retainedConfigRestartCount;
 
+static constexpr uint32_t RETAINED_RECONNECT_MAGIC = 0x52455452;
+RTC_NOINIT_ATTR volatile uint32_t retainedReconnectMagic;
+RTC_NOINIT_ATTR volatile uint32_t retainedReconnectMagicInverse;
+RTC_NOINIT_ATTR volatile uint32_t retainedReconnectFailureCount;
+
 bool retainedConfigRequestIsValid() {
   return retainedConfigMagic == RETAINED_CONFIG_MAGIC &&
          retainedConfigMagicInverse == ~RETAINED_CONFIG_MAGIC;
@@ -273,6 +281,36 @@ void clearRetainedConfigRequest() {
   retainedConfigMagic = 0;
   retainedConfigMagicInverse = 0;
   retainedConfigRestartCount = 0;
+}
+
+bool retainedReconnectStateIsValid() {
+  return retainedReconnectMagic == RETAINED_RECONNECT_MAGIC &&
+         retainedReconnectMagicInverse == ~RETAINED_RECONNECT_MAGIC;
+}
+
+void clearRetainedReconnectFailures() {
+  retainedReconnectMagic = 0;
+  retainedReconnectMagicInverse = 0;
+  retainedReconnectFailureCount = 0;
+}
+
+uint16_t recordReconnectFailure() {
+  uint32_t failureCount = retainedReconnectStateIsValid()
+    ? retainedReconnectFailureCount
+    : 0;
+  const size_t retryCount =
+    sizeof(ZIGBEE_RECONNECT_RETRY_MINUTES) /
+    sizeof(ZIGBEE_RECONNECT_RETRY_MINUTES[0]);
+  const size_t retryIndex = min(
+    static_cast<size_t>(failureCount), retryCount - 1);
+
+  if (failureCount < UINT32_MAX) {
+    failureCount++;
+  }
+  retainedReconnectMagic = RETAINED_RECONNECT_MAGIC;
+  retainedReconnectMagicInverse = ~RETAINED_RECONNECT_MAGIC;
+  retainedReconnectFailureCount = failureCount;
+  return ZIGBEE_RECONNECT_RETRY_MINUTES[retryIndex];
 }
 
 struct PendingCalibrationWrites {
@@ -1076,6 +1114,7 @@ bool initializeZigbee(bool eraseZigbeeStorage, bool receiverOnWhenIdle) {
     log_e("Timed out waiting for Zigbee connection");
     return false;
   }
+  clearRetainedReconnectFailures();
   return true;
 }
 
@@ -1098,11 +1137,21 @@ void handleZigbeeStartupFailure(BootAction bootAction) {
   clearRetainedConfigRequest();
   if (batteryPowered) {
     // Never leave a battery device stuck awake in a failed connection loop.
-    // A subsequent short press retries with the receiver continuously on.
-    log_w("Zigbee unavailable; sleeping until the next button press");
+    // Normal measurement boots retry automatically with retained backoff;
+    // configuration and factory-reset failures still wait for user action.
+    if (bootAction == BootAction::Normal) {
+      const uint16_t retryMinutes = recordReconnectFailure();
+      log_w(
+        "Zigbee unavailable; retrying automatically in %u min",
+        retryMinutes);
+      esp_sleep_enable_timer_wakeup(
+        static_cast<uint64_t>(retryMinutes) * 60ULL * uS_TO_S_FACTOR);
+    } else {
+      log_w("Zigbee unavailable; sleeping until the next button press");
+      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    }
     analogWrite(pwmPin, 0);
     clearMoistureLeds();
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     configureButtonWakeup();
     esp_deep_sleep_start();
   }
