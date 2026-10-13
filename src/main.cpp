@@ -92,7 +92,7 @@ struct BatteryCurvePoint {
 
 #if BATTERY_CHEMISTRY == BATTERY_CHEMISTRY_NIMH
 static constexpr char BATTERY_CHEMISTRY_NAME[] = "NiMH";
-static constexpr char FIRMWARE_BUILD_ID[] = "dev2.09-nimh";
+static constexpr char FIRMWARE_BUILD_ID[] = "dev2.10-nimh";
 // Terminal voltage is only an estimate of NiMH state of charge. These points
 // deliberately spread the flat discharge plateau across the useful range and
 // can be refined later from logged field data without changing Zigbee state.
@@ -109,7 +109,7 @@ static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
 };
 #else
 static constexpr char BATTERY_CHEMISTRY_NAME[] = "alkaline";
-static constexpr char FIRMWARE_BUILD_ID[] = "dev2.09-alkaline";
+static constexpr char FIRMWARE_BUILD_ID[] = "dev2.10-alkaline";
 static constexpr BatteryCurvePoint BATTERY_CURVE[] = {
   {1550, 100},
   {1450, 90},
@@ -294,7 +294,7 @@ void clearRetainedReconnectFailures() {
   retainedReconnectFailureCount = 0;
 }
 
-uint16_t recordReconnectFailure() {
+uint16_t recordReconnectFailure(uint16_t configuredIntervalMinutes) {
   uint32_t failureCount = retainedReconnectStateIsValid()
     ? retainedReconnectFailureCount
     : 0;
@@ -310,7 +310,9 @@ uint16_t recordReconnectFailure() {
   retainedReconnectMagic = RETAINED_RECONNECT_MAGIC;
   retainedReconnectMagicInverse = ~RETAINED_RECONNECT_MAGIC;
   retainedReconnectFailureCount = failureCount;
-  return ZIGBEE_RECONNECT_RETRY_MINUTES[retryIndex];
+  return min(
+    ZIGBEE_RECONNECT_RETRY_MINUTES[retryIndex],
+    configuredIntervalMinutes);
 }
 
 struct PendingCalibrationWrites {
@@ -737,6 +739,15 @@ MoistureReading measureMoisture() {
   };
 }
 
+uint16_t sleepMinutesForMoisture(const MoistureReading &moisture) {
+  const bool plantIsDry =
+    !moisture.valid ||
+    moisture.percentage < activeSleepPolicy.dryThresholdPercent;
+  return plantIsDry
+    ? activeSleepPolicy.dryIntervalMinutes
+    : activeSleepPolicy.moistIntervalMinutes;
+}
+
 void clearMoistureLeds() {
   digitalWrite(ledRedPin, 0);
   digitalWrite(ledGreenPin, 0);
@@ -915,12 +926,7 @@ void reportMeasurementsWithAcknowledgements(const MoistureReading &moisture) {
 }
 
 void scheduleNextWake(const MoistureReading &moisture) {
-  const bool plantIsDry =
-    !moisture.valid ||
-    moisture.percentage < activeSleepPolicy.dryThresholdPercent;
-  const uint32_t sleepMinutes = plantIsDry
-    ? activeSleepPolicy.dryIntervalMinutes
-    : activeSleepPolicy.moistIntervalMinutes;
+  const uint16_t sleepMinutes = sleepMinutesForMoisture(moisture);
   log_i(
     "Sleep policy: moisture=%u%%, dry_below=%u%%, next_wake=%lu min",
     moisture.percentage, activeSleepPolicy.dryThresholdPercent,
@@ -1140,10 +1146,15 @@ void handleZigbeeStartupFailure(BootAction bootAction) {
     // Normal measurement boots retry automatically with retained backoff;
     // configuration and factory-reset failures still wait for user action.
     if (bootAction == BootAction::Normal) {
-      const uint16_t retryMinutes = recordReconnectFailure();
+      const MoistureReading moisture = measureMoisture();
+      const uint16_t configuredIntervalMinutes =
+        sleepMinutesForMoisture(moisture);
+      const uint16_t retryMinutes =
+        recordReconnectFailure(configuredIntervalMinutes);
       log_w(
-        "Zigbee unavailable; retrying automatically in %u min",
-        retryMinutes);
+        "Zigbee unavailable; retrying automatically in %u min "
+        "(configured interval %u min)",
+        retryMinutes, configuredIntervalMinutes);
       esp_sleep_enable_timer_wakeup(
         static_cast<uint64_t>(retryMinutes) * 60ULL * uS_TO_S_FACTOR);
     } else {

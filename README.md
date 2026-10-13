@@ -56,7 +56,7 @@ pio run -e seeed_xiao_esp32_c6_alkaline
 Changing chemistry only changes the internal voltage-to-percentage curve. A
 normal upload preserves Zigbee pairing and stored device settings; do not erase
 the device when switching profiles. ZHA can identify the installed profile from
-the standard software build ID (`dev2.09-nimh` or `dev2.09-alkaline`). The
+the standard software build ID (`dev2.10-nimh` or `dev2.10-alkaline`). The
 custom quirk displays that value as a diagnostic Firmware version sensor without
 periodic reporting. The existing battery entity also advertises one AA cell
 through standard read-only Power Configuration attributes.
